@@ -440,9 +440,11 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
             }
         } else {
             // If no metadata, check field name for time column
-            if field.name().to_lowercase() == "time"
-                || field.name().to_lowercase() == "timestamp"
-                || field.name().to_lowercase() == "_time"
+            let name_lower = field.name().to_lowercase();
+            if name_lower == "time"
+                || name_lower == "timestamp"
+                || name_lower == "_time"
+                || name_lower == "eventtime"
             {
                 ts_idx = Some(idx);
             } else {
@@ -454,13 +456,27 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
     // panic if no timestamp found
     let ts_idx = ts_idx.expect("No timestamp column found in RecordBatch");
 
-    let timestamps = as_primitive_array::<TimestampNanosecondType>(batch.column(ts_idx));
+    // Get the timestamp column - it might be Int64 or TimestampNanosecond
+    let ts_column = batch.column(ts_idx);
+    let timestamps_vec: Vec<u64> = match ts_column.data_type() {
+        DataType::Int64 => {
+            let arr = ts_column.as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("Failed to downcast to Int64Array");
+            (0..arr.len()).map(|i| arr.value(i) as u64).collect()
+        }
+        DataType::Timestamp(_, _) => {
+            let arr = as_primitive_array::<TimestampNanosecondType>(ts_column);
+            (0..arr.len()).map(|i| arr.value(i) as u64).collect()
+        }
+        dt => panic!("Unexpected data type for timestamp column: {:?}", dt),
+    };
 
     // Build results
     let mut results = Vec::with_capacity(batch.num_rows());
 
     for row_idx in 0..batch.num_rows() {
-        let ts = timestamps.value(row_idx) as u64;
+        let ts = timestamps_vec[row_idx];
 
         // Collect all non-time column values for this row
         let mut row_values = BTreeMap::new();

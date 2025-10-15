@@ -3,90 +3,130 @@ use std::time::Instant;
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    record_batches_to_row_data, InteravlCache, IntervalCache, IntervalTreeCache, VecCache,
+    extract_rows_from_batch, InteravlCache, IntervalCache, IntervalTreeCache, RecordBatchRow,
+    SortedData, VecCache,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Tag Values Cache Benchmark ===\n");
 
-    // Load the three parquet files
-    let file1_path = "test_fixtures/influxql_logs/influxql_log_1.parquet";
-    let file2_path = "test_fixtures/influxql_logs/influxql_log_2.parquet";
-    let file3_path = "test_fixtures/influxql_logs/influxql_log_3.parquet";
+    // Use the large clickbench dataset
+    let file_path = "test_fixtures/clickbench/hits.parquet";
 
-    println!("Loading parquet files...");
+    println!("Loading parquet file: {}", file_path);
 
-    // Load first file for building
-    let file1 = File::open(file1_path)?;
-    let builder1 = ParquetRecordBatchReaderBuilder::try_new(file1)?;
-    let reader1 = builder1.build()?;
-    let sorted_data1 = record_batches_to_row_data(reader1)?;
-    let num_points1 = sorted_data1.clone().into_inner().len();
-    println!("  File 1: {} data points", num_points1);
+    // Open the parquet file
+    let file = File::open(file_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
 
-    // Load second file for appending
-    let file2 = File::open(file2_path)?;
-    let builder2 = ParquetRecordBatchReaderBuilder::try_new(file2)?;
-    let reader2 = builder2.build()?;
-    let sorted_data2 = record_batches_to_row_data(reader2)?;
-    let num_points2 = sorted_data2.clone().into_inner().len();
-    println!("  File 2: {} data points", num_points2);
+    // Get metadata about the file
+    let metadata = builder.metadata();
+    let total_rows = metadata.file_metadata().num_rows();
+    println!("Total rows in file: {}", total_rows);
 
-    // Load third file for appending
-    let file3 = File::open(file3_path)?;
-    let builder3 = ParquetRecordBatchReaderBuilder::try_new(file3)?;
-    let reader3 = builder3.build()?;
-    let sorted_data3 = record_batches_to_row_data(reader3)?;
-    let num_points3 = sorted_data3.clone().into_inner().len();
-    println!("  File 3: {} data points", num_points3);
+    // Build the reader
+    let mut reader = builder.build()?;
 
-    println!("  Total: {} data points\n", num_points1 + num_points2 + num_points3);
+    // Process batches until we have 200k rows
+    println!("\nReading and processing RecordBatches (limiting to 200k rows)...");
+    let start_load = Instant::now();
+    let mut all_data = Vec::new();
+    let mut batch_count = 0;
+    let target_rows = 200_000;  // 200k rows total (100k initial + 100k append)
+
+    while let Some(batch_result) = reader.next() {
+        if all_data.len() >= target_rows {
+            break;
+        }
+
+        let batch = batch_result?;
+        batch_count += 1;
+
+        if batch_count % 20 == 0 {
+            println!("  Processed {} batches ({} rows)...", batch_count, all_data.len());
+        }
+
+        let rows = extract_rows_from_batch(batch);
+        all_data.extend(rows);
+
+        // Trim to exactly target_rows if we went over
+        if all_data.len() > target_rows {
+            all_data.truncate(target_rows);
+            break;
+        }
+    }
+
+    println!("  Processed {} batches ({} rows) in {:?}", batch_count, all_data.len(), start_load.elapsed());
+
+    // Split the data in half
+    let mid_point = all_data.len() / 2;
+    let (first_half, second_half) = all_data.split_at(mid_point);
+
+    println!("\nData split:");
+    println!("  First half: {} rows (for initial build)", first_half.len());
+    println!("  Second half: {} rows (for append)", second_half.len());
+
+    // Create sorted data for each half
+    println!("\nSorting data...");
+    let start_sort = Instant::now();
+    let sorted_data1 = SortedData::from_unsorted(first_half.to_vec());
+    let sorted_data2 = SortedData::from_unsorted(second_half.to_vec());
+    println!("  Sorting completed in {:?}", start_sort.elapsed());
 
     // Show a sample of the data structure
-    println!("Sample data point:");
+    println!("\nSample data point:");
     if let Some((ts, row)) = sorted_data1.clone().into_inner().first() {
         println!("  Timestamp: {}", ts);
-        println!("  Columns: {:?}", row.values.keys().collect::<Vec<_>>());
-        println!("  Values: {}", row);
+        println!("  Number of columns: {}", row.values.len());
 
-        // Show data types for first few columns
-        println!("\n  Column Types:");
-        for (name, value) in row.values.iter().take(6) {
+        // Show first few columns with their types
+        println!("  First 5 columns:");
+        for (name, value) in row.values.iter().take(5) {
             let type_name = match value {
                 tag_values_cache::ArrowValue::Null => "Null",
                 tag_values_cache::ArrowValue::Boolean(_) => "Boolean",
+                tag_values_cache::ArrowValue::Int8(_) => "Int8",
+                tag_values_cache::ArrowValue::Int16(_) => "Int16",
+                tag_values_cache::ArrowValue::Int32(_) => "Int32",
                 tag_values_cache::ArrowValue::Int64(_) => "Int64",
+                tag_values_cache::ArrowValue::UInt8(_) => "UInt8",
+                tag_values_cache::ArrowValue::UInt16(_) => "UInt16",
+                tag_values_cache::ArrowValue::UInt32(_) => "UInt32",
+                tag_values_cache::ArrowValue::UInt64(_) => "UInt64",
+                tag_values_cache::ArrowValue::Float32(_) => "Float32",
                 tag_values_cache::ArrowValue::Float64(_) => "Float64",
                 tag_values_cache::ArrowValue::String(_) => "String",
                 tag_values_cache::ArrowValue::Binary(_) => "Binary",
-                _ => "Other",
+                tag_values_cache::ArrowValue::Unsupported(_) => "Unsupported",
             };
             println!("    {}: {} ({})", name, value, type_name);
         }
-        println!();
     }
 
-    // Benchmark building from first file
-    println!("=== Build Performance ===");
-    println!("Building cache from {} points...\n", num_points1);
+    // Benchmark building from first half
+    println!("\n=== Build Performance ===");
+    println!("Building cache from {} rows...\n", first_half.len());
 
     // Benchmark IntervalTreeCache
+    println!("Building IntervalTreeCache...");
     let start = Instant::now();
     let mut tree_cache = IntervalTreeCache::from_sorted(sorted_data1.clone())?;
     let tree_build_time = start.elapsed();
-    println!("IntervalTreeCache: {:?}", tree_build_time);
+    println!("  IntervalTreeCache: {:?}", tree_build_time);
 
     // Benchmark VecCache
+    println!("Building VecCache...");
     let start = Instant::now();
     let mut vec_cache = VecCache::from_sorted(sorted_data1.clone())?;
     let vec_build_time = start.elapsed();
-    println!("VecCache:          {:?}", vec_build_time);
+    println!("  VecCache: {:?}", vec_build_time);
 
     // Benchmark InteravlCache
+    println!("Building InteravlCache...");
     let start = Instant::now();
     let mut avl_cache = InteravlCache::from_sorted(sorted_data1.clone())?;
     let avl_build_time = start.elapsed();
-    println!("InteravlCache:     {:?}", avl_build_time);
+    println!("  InteravlCache: {:?}", avl_build_time);
 
     // Find fastest build
     let min_build = tree_build_time.min(vec_build_time).min(avl_build_time);
@@ -101,28 +141,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Benchmark append performance
     println!("=== Append Performance ===");
-    println!("Appending {} + {} points...\n", num_points2, num_points3);
+    println!("Appending {} rows...\n", second_half.len());
 
     // Append to IntervalTreeCache
+    println!("Appending to IntervalTreeCache...");
     let start = Instant::now();
     tree_cache.append_sorted(sorted_data2.clone())?;
-    tree_cache.append_sorted(sorted_data3.clone())?;
     let tree_append_time = start.elapsed();
-    println!("IntervalTreeCache: {:?}", tree_append_time);
+    println!("  IntervalTreeCache: {:?}", tree_append_time);
 
     // Append to VecCache
+    println!("Appending to VecCache...");
     let start = Instant::now();
     vec_cache.append_sorted(sorted_data2.clone())?;
-    vec_cache.append_sorted(sorted_data3.clone())?;
     let vec_append_time = start.elapsed();
-    println!("VecCache:          {:?}", vec_append_time);
+    println!("  VecCache: {:?}", vec_append_time);
 
     // Append to InteravlCache
+    println!("Appending to InteravlCache...");
     let start = Instant::now();
-    avl_cache.append_sorted(sorted_data2.clone())?;
-    avl_cache.append_sorted(sorted_data3)?;
+    avl_cache.append_sorted(sorted_data2)?;
     let avl_append_time = start.elapsed();
-    println!("InteravlCache:     {:?}", avl_append_time);
+    println!("  InteravlCache: {:?}", avl_append_time);
 
     // Find fastest append
     let min_append = tree_append_time.min(vec_append_time).min(avl_append_time);
@@ -138,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate query test points
     println!("=== Query Performance ===");
 
-    // Get some sample timestamps from the data for realistic queries
+    // Get some sample timestamps from the sorted data for realistic queries
     let all_data = sorted_data1.into_inner();
     let sample_size = 1000.min(all_data.len());
     let step = all_data.len() / sample_size;
@@ -148,8 +188,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let min_ts = all_data.first().map(|p| p.0).unwrap_or(0);
     let max_ts = all_data.last().map(|p| p.0).unwrap_or(1000000);
-    let range_size = (max_ts - min_ts) / 10;
-    let test_ranges: Vec<std::ops::Range<u64>> = (0..10)
+    let range_size = (max_ts - min_ts) / 100; // 100 test ranges
+    let test_ranges: Vec<std::ops::Range<u64>> = (0..100)
         .map(|i| {
             let start = min_ts + i * range_size;
             let end = start + range_size;
@@ -160,7 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running {} point queries and {} range queries...\n", test_points.len(), test_ranges.len());
 
     // Benchmark point queries
-    println!("Point queries:");
+    println!("Point queries ({} queries):", test_points.len());
 
     let start = Instant::now();
     for &t in &test_points {
@@ -174,14 +214,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = vec_cache.query_point(t);
     }
     let vec_point_time = start.elapsed();
-    println!("  VecCache:          {:?}", vec_point_time);
+    println!("  VecCache: {:?}", vec_point_time);
 
     let start = Instant::now();
     for &t in &test_points {
         let _ = avl_cache.query_point(t);
     }
     let avl_point_time = start.elapsed();
-    println!("  InteravlCache:     {:?}", avl_point_time);
+    println!("  InteravlCache: {:?}", avl_point_time);
 
     // Find fastest point query
     let min_point = tree_point_time.min(vec_point_time).min(avl_point_time);
@@ -195,7 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n  Fastest: {}", fastest_point);
 
     // Benchmark range queries
-    println!("\nRange queries:");
+    println!("\nRange queries ({} queries):", test_ranges.len());
 
     let start = Instant::now();
     for range in &test_ranges {
@@ -209,14 +249,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = vec_cache.query_range(range.clone());
     }
     let vec_range_time = start.elapsed();
-    println!("  VecCache:          {:?}", vec_range_time);
+    println!("  VecCache: {:?}", vec_range_time);
 
     let start = Instant::now();
     for range in &test_ranges {
         let _ = avl_cache.query_range(range.clone());
     }
     let avl_range_time = start.elapsed();
-    println!("  InteravlCache:     {:?}", avl_range_time);
+    println!("  InteravlCache: {:?}", avl_range_time);
 
     // Find fastest range query
     let min_range = tree_range_time.min(vec_range_time).min(avl_range_time);
@@ -231,15 +271,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Summary
     println!("\n=== Summary ===");
-    println!("Build:        {} wins", fastest_build);
-    println!("Append:       {} wins", fastest_append);
-    println!("Point Query:  {} wins", fastest_point);
-    println!("Range Query:  {} wins", fastest_range);
+    println!("Dataset: {} total rows processed", all_data.len() + second_half.len());
+    println!("\nPerformance winners:");
+    println!("  Build:        {} ({:?})", fastest_build, min_build);
+    println!("  Append:       {} ({:?})", fastest_append, min_append);
+    println!("  Point Query:  {} ({:?})", fastest_point, min_point);
+    println!("  Range Query:  {} ({:?})", fastest_range, min_range);
 
     // Calculate total times for overall winner
     let tree_total = tree_build_time + tree_append_time + tree_point_time + tree_range_time;
     let vec_total = vec_build_time + vec_append_time + vec_point_time + vec_range_time;
     let avl_total = avl_build_time + avl_append_time + avl_point_time + avl_range_time;
+
+    println!("\nTotal times:");
+    println!("  IntervalTreeCache: {:?}", tree_total);
+    println!("  VecCache:          {:?}", vec_total);
+    println!("  InteravlCache:     {:?}", avl_total);
 
     let min_total = tree_total.min(vec_total).min(avl_total);
     let overall_winner = if min_total == vec_total {
@@ -250,7 +297,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "InteravlCache"
     };
 
-    println!("\nOverall winner: {} (total: {:?})", overall_winner, min_total);
+    println!("\nOverall winner: {} ({:?} total)", overall_winner, min_total);
+
+    // Memory estimate
+    if let Some((_, row)) = all_data.first() {
+        let row_size_estimate = std::mem::size_of::<RecordBatchRow>() +
+                                row.values.len() * (32 + 16); // Rough estimate per column
+        let total_memory_estimate = (all_data.len() + second_half.len()) * row_size_estimate;
+        println!("\nEstimated memory usage: {} MB", total_memory_estimate / 1_000_000);
+    }
 
     Ok(())
 }
