@@ -2,9 +2,11 @@
 
 use std::ops::Range;
 
+pub mod interavl_cache;
 pub mod interval_tree;
 pub mod vec_cache;
 
+pub use interavl_cache::InteravlCache;
 pub use interval_tree::IntervalTreeCache;
 pub use vec_cache::VecCache;
 
