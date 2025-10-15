@@ -25,6 +25,47 @@ where
     tree: IntervalTree<u64, usize>,  // usize is index into intervals vec
 }
 
+impl<V> InteravlCache<V>
+where
+    V: Clone + Eq + Hash,
+{
+    /// Merge adjacent or overlapping intervals with the same value.
+    ///
+    /// Takes a list of intervals and merges any that are adjacent (touching) or overlapping
+    /// and have the same value.
+    fn merge_intervals(mut intervals: Vec<(Range<u64>, V)>) -> Vec<(Range<u64>, V)> {
+        if intervals.is_empty() {
+            return intervals;
+        }
+
+        // Sort by start time, then by end time
+        intervals.sort_by_key(|(range, _)| (range.start, range.end));
+
+        let mut merged = Vec::new();
+        let mut iter = intervals.into_iter();
+        let (first_range, first_value) = iter.next().unwrap();
+
+        let mut current_range = first_range;
+        let mut current_value = first_value;
+
+        for (range, value) in iter {
+            if value == current_value && range.start <= current_range.end {
+                // Adjacent or overlapping with same value - merge
+                current_range.end = current_range.end.max(range.end);
+            } else {
+                // Different value or gap - save current and start new
+                merged.push((current_range, current_value));
+                current_range = range;
+                current_value = value;
+            }
+        }
+
+        // Don't forget the last interval
+        merged.push((current_range, current_value));
+        merged
+    }
+}
+
 impl<V> IntervalCache<V> for InteravlCache<V>
 where
     V: Clone + Eq + Hash,
@@ -121,17 +162,19 @@ where
         // Build new intervals from sorted points
         let new_cache = Self::from_sorted(sorted_data)?;
 
-        // Add new intervals to our collection
-        // The indices need to be offset by the current number of intervals
-        let _offset = self.intervals.len();
+        // Collect all intervals (existing + new)
+        let mut all_intervals = self.intervals.clone();
+        all_intervals.extend(new_cache.intervals);
 
-        for (interval, value) in new_cache.intervals {
-            let idx = self.intervals.len();
-            self.intervals.push((interval.clone(), value));
-            self.tree.insert(interval, idx);
+        // Merge adjacent intervals with same value for better efficiency
+        let merged = Self::merge_intervals(all_intervals);
+
+        // Rebuild the tree with merged intervals
+        self.intervals = merged;
+        self.tree = IntervalTree::default();
+        for (idx, (interval, _)) in self.intervals.iter().enumerate() {
+            self.tree.insert(interval.clone(), idx);
         }
-
-        // TODO: Merge adjacent intervals with same value for better efficiency
 
         Ok(())
     }
@@ -163,6 +206,10 @@ where
         );
 
         size
+    }
+
+    fn interval_count(&self) -> usize {
+        self.intervals.len()
     }
 }
 

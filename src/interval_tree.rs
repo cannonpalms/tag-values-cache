@@ -65,8 +65,9 @@ where
             all_intervals.push((entry.range.clone(), entry.value.clone()));
         }
 
-        // TODO: Merge adjacent/overlapping intervals with same value
-        self.tree = all_intervals.into_iter().collect();
+        // Merge adjacent/overlapping intervals with same value
+        let merged = Self::merge_intervals(all_intervals);
+        self.tree = merged.into_iter().collect();
 
         Ok(())
     }
@@ -98,12 +99,62 @@ where
 
         size
     }
+
+    fn interval_count(&self) -> usize {
+        self.tree.iter().count()
+    }
 }
 
 impl<V> IntervalTreeCache<V>
 where
     V: Clone + Eq + Hash,
 {
+    /// Merge adjacent or overlapping intervals with the same value.
+    ///
+    /// Takes a list of intervals and merges any that are adjacent (touching) or overlapping
+    /// and have the same value. Also removes any duplicate intervals.
+    fn merge_intervals(mut intervals: Vec<(Range<u64>, V)>) -> Vec<(Range<u64>, V)> {
+        if intervals.is_empty() {
+            return intervals;
+        }
+
+        // First, remove exact duplicates
+        // Sort to group identical intervals together
+        // We only sort by interval bounds, not values
+        intervals.sort_by_key(|interval| (interval.0.start, interval.0.end));
+
+        // Deduplicate identical intervals
+        intervals.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        // Now merge adjacent/overlapping intervals with same value
+        let mut merged = Vec::new();
+        let mut iter = intervals.into_iter();
+        let (first_range, first_value) = iter.next().unwrap();
+
+        let mut current_range = first_range;
+        let mut current_value = first_value;
+
+        for (range, value) in iter {
+            if value == current_value && range.start <= current_range.end {
+                // Adjacent or overlapping with same value - merge
+                current_range.end = current_range.end.max(range.end);
+            } else {
+                // Different value or gap - save current and start new
+                merged.push((current_range.clone(), current_value.clone()));
+                current_range = range;
+                current_value = value;
+            }
+        }
+
+        // Don't forget the last interval
+        merged.push((current_range, current_value));
+
+        // Final deduplication check (in case merging created duplicates)
+        merged.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        merged
+    }
+
     /// Build an interval tree from discrete timestamp-value pairs.
     ///
     /// Consecutive timestamps with the same value are merged into single intervals.

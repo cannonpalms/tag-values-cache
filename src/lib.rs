@@ -286,6 +286,15 @@ where
     fn size_bytes(&self) -> usize
     where
         V: HeapSize;
+
+    /// Return the number of intervals stored in the cache.
+    ///
+    /// This represents the number of distinct time ranges after merging
+    /// adjacent/overlapping intervals with identical values.
+    ///
+    /// # Returns
+    /// The total number of intervals in the cache.
+    fn interval_count(&self) -> usize;
 }
 
 /// Builder pattern for creating interval caches with different configurations

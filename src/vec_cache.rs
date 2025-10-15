@@ -34,6 +34,57 @@ where
     values: Vec<V>,
 }
 
+impl<V> VecCache<V>
+where
+    V: Clone + Eq + Hash,
+{
+    /// Merge adjacent or overlapping intervals with the same value.
+    ///
+    /// Takes a list of intervals and merges any that are adjacent (touching) or overlapping
+    /// and have the same value. Also removes any duplicate intervals.
+    fn merge_intervals(mut intervals: Vec<(std::ops::Range<u64>, V)>) -> Vec<(std::ops::Range<u64>, V)> {
+        if intervals.is_empty() {
+            return intervals;
+        }
+
+        // First, remove exact duplicates
+        // Sort to group identical intervals together
+        // We only sort by interval bounds, not values
+        intervals.sort_by_key(|interval| (interval.0.start, interval.0.end));
+
+        // Deduplicate identical intervals
+        intervals.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        // Now merge adjacent/overlapping intervals with same value
+        let mut merged = Vec::new();
+        let mut iter = intervals.into_iter();
+        let (first_range, first_value) = iter.next().unwrap();
+
+        let mut current_range = first_range;
+        let mut current_value = first_value;
+
+        for (range, value) in iter {
+            if value == current_value && range.start <= current_range.end {
+                // Adjacent or overlapping with same value - merge
+                current_range.end = current_range.end.max(range.end);
+            } else {
+                // Different value or gap - save current and start new
+                merged.push((current_range.clone(), current_value.clone()));
+                current_range = range;
+                current_value = value;
+            }
+        }
+
+        // Don't forget the last interval
+        merged.push((current_range, current_value));
+
+        // Final deduplication check (in case merging created duplicates)
+        merged.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        merged
+    }
+}
+
 impl<V> IntervalCache<V> for VecCache<V>
 where
     V: Clone + Eq + Hash,
@@ -151,9 +202,6 @@ where
         // Build intervals from sorted points
         let new_cache = Self::from_sorted(sorted_data)?;
 
-        // Merge the new intervals with existing ones, maintaining sorted order
-        // We need to maintain the invariant that starts are sorted
-
         // If existing cache is empty, just replace with new
         if self.starts.is_empty() {
             self.starts = new_cache.starts;
@@ -167,41 +215,31 @@ where
             return Ok(());
         }
 
-        // Check if we can simply append (new intervals come after existing ones)
-        if self.starts.last().unwrap() <= &new_cache.starts[0] {
-            // New intervals start after or at the last existing interval
-            // We can just append
-            self.starts.extend(new_cache.starts);
-            self.ends.extend(new_cache.ends);
-            self.values.extend(new_cache.values);
-        } else {
-            // Need to merge while maintaining sorted order
-            // This is more complex - rebuild from scratch for now
-            let mut all_intervals: Vec<(u64, u64, V)> = Vec::new();
+        // Collect all intervals as Range objects for merging
+        let mut all_intervals: Vec<(std::ops::Range<u64>, V)> = Vec::new();
 
-            // Collect existing intervals
-            for i in 0..self.starts.len() {
-                all_intervals.push((self.starts[i], self.ends[i], self.values[i].clone()));
-            }
+        // Collect existing intervals
+        for i in 0..self.starts.len() {
+            all_intervals.push((self.starts[i]..self.ends[i], self.values[i].clone()));
+        }
 
-            // Add new intervals
-            for i in 0..new_cache.starts.len() {
-                all_intervals.push((new_cache.starts[i], new_cache.ends[i], new_cache.values[i].clone()));
-            }
+        // Add new intervals
+        for i in 0..new_cache.starts.len() {
+            all_intervals.push((new_cache.starts[i]..new_cache.ends[i], new_cache.values[i].clone()));
+        }
 
-            // Sort by start time
-            all_intervals.sort_by_key(|&(start, _, _)| start);
+        // Merge intervals using the same logic as other implementations
+        let merged = Self::merge_intervals(all_intervals);
 
-            // Rebuild the vectors
-            self.starts.clear();
-            self.ends.clear();
-            self.values.clear();
+        // Rebuild the vectors from merged intervals
+        self.starts.clear();
+        self.ends.clear();
+        self.values.clear();
 
-            for (start, end, value) in all_intervals {
-                self.starts.push(start);
-                self.ends.push(end);
-                self.values.push(value);
-            }
+        for (range, value) in merged {
+            self.starts.push(range.start);
+            self.ends.push(range.end);
+            self.values.push(value);
         }
 
         Ok(())
@@ -235,6 +273,10 @@ where
         }
 
         size
+    }
+
+    fn interval_count(&self) -> usize {
+        self.starts.len()
     }
 }
 
