@@ -3,7 +3,10 @@
 use std::ops::Range;
 
 pub mod interval_tree;
+pub mod vec_cache;
+
 pub use interval_tree::IntervalTreeCache;
+pub use vec_cache::VecCache;
 
 /// The type used for timestamps (nanoseconds since epoch)
 pub type Timestamp = u64;
