@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    extract_rows_from_batch, InteravlCache, IntervalCache, IntervalTreeCache, RecordBatchRow,
-    SortedData, VecCache,
+    InteravlCache, IntervalCache, IntervalTreeCache, SortedData, VecCache,
+    extract_rows_from_batch,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_load = Instant::now();
     let mut all_data = Vec::new();
     let mut batch_count = 0;
-    let target_rows = 200_000;  // 200k rows total (100k initial + 100k append)
+    let target_rows = 200_000; // 200k rows total (100k initial + 100k append)
 
     while let Some(batch_result) = reader.next() {
         if all_data.len() >= target_rows {
@@ -43,7 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         batch_count += 1;
 
         if batch_count % 20 == 0 {
-            println!("  Processed {} batches ({} rows)...", batch_count, all_data.len());
+            println!(
+                "  Processed {} batches ({} rows)...",
+                batch_count,
+                all_data.len()
+            );
         }
 
         let rows = extract_rows_from_batch(batch);
@@ -56,14 +60,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("  Processed {} batches ({} rows) in {:?}", batch_count, all_data.len(), start_load.elapsed());
+    println!(
+        "  Processed {} batches ({} rows) in {:?}",
+        batch_count,
+        all_data.len(),
+        start_load.elapsed()
+    );
 
     // Split the data in half
     let mid_point = all_data.len() / 2;
     let (first_half, second_half) = all_data.split_at(mid_point);
 
     println!("\nData split:");
-    println!("  First half: {} rows (for initial build)", first_half.len());
+    println!(
+        "  First half: {} rows (for initial build)",
+        first_half.len()
+    );
     println!("  Second half: {} rows (for append)", second_half.len());
 
     // Create sorted data for each half
@@ -152,9 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let all_data = sorted_data1.into_inner();
     let sample_size = 1000.min(all_data.len());
     let step = all_data.len() / sample_size;
-    let test_points: Vec<u64> = (0..sample_size)
-        .map(|i| all_data[i * step].0)
-        .collect();
+    let test_points: Vec<u64> = (0..sample_size).map(|i| all_data[i * step].0).collect();
 
     let min_ts = all_data.first().map(|p| p.0).unwrap_or(0);
     let max_ts = all_data.last().map(|p| p.0).unwrap_or(1000000);
@@ -167,7 +177,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("Running {} point queries and {} range queries...\n", test_points.len(), test_ranges.len());
+    println!(
+        "Running {} point queries and {} range queries...\n",
+        test_points.len(),
+        test_ranges.len()
+    );
 
     // Benchmark point queries
     println!("Point queries ({} queries):", test_points.len());
@@ -239,14 +253,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("\n  Fastest: {}", fastest_range);
 
+    // Measure memory usage
+    println!("=== Memory Usage ===");
+    println!("Measuring actual memory usage for each cache implementation...\n");
+
+    // Get actual memory usage from the size_bytes() method
+    let tree_memory = tree_cache.size_bytes();
+    let vec_memory = vec_cache.size_bytes();
+    let avl_memory = avl_cache.size_bytes();
+
+    println!(
+        "  IntervalTreeCache: {} MB ({} bytes)",
+        tree_memory / 1_000_000,
+        tree_memory
+    );
+    println!(
+        "  VecCache:          {} MB ({} bytes)",
+        vec_memory / 1_000_000,
+        vec_memory
+    );
+    println!(
+        "  InteravlCache:     {} MB ({} bytes)",
+        avl_memory / 1_000_000,
+        avl_memory
+    );
+
+    let min_memory = tree_memory.min(vec_memory).min(avl_memory);
+    let lowest_memory = if min_memory == vec_memory {
+        "VecCache"
+    } else if min_memory == tree_memory {
+        "IntervalTreeCache"
+    } else {
+        "InteravlCache"
+    };
+    println!("\nLowest memory usage: {}\n", lowest_memory);
+
     // Summary
     println!("\n=== Summary ===");
-    println!("Dataset: {} total rows processed", all_data.len() + second_half.len());
+    println!(
+        "Dataset: {} total rows processed",
+        all_data.len() + second_half.len()
+    );
     println!("\nPerformance winners:");
     println!("  Build:        {} ({:?})", fastest_build, min_build);
     println!("  Append:       {} ({:?})", fastest_append, min_append);
     println!("  Point Query:  {} ({:?})", fastest_point, min_point);
     println!("  Range Query:  {} ({:?})", fastest_range, min_range);
+    println!(
+        "  Memory:       {} ({} MB)",
+        lowest_memory,
+        min_memory / 1_000_000
+    );
 
     // Calculate total times for overall winner
     let tree_total = tree_build_time + tree_append_time + tree_point_time + tree_range_time;
@@ -267,15 +324,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "InteravlCache"
     };
 
-    println!("\nOverall winner: {} ({:?} total)", overall_winner, min_total);
-
-    // Memory estimate
-    if let Some((_, row)) = all_data.first() {
-        let row_size_estimate = std::mem::size_of::<RecordBatchRow>() +
-                                row.values.len() * (32 + 16); // Rough estimate per column
-        let total_memory_estimate = (all_data.len() + second_half.len()) * row_size_estimate;
-        println!("\nEstimated memory usage: {} MB", total_memory_estimate / 1_000_000);
-    }
+    println!(
+        "\nOverall winner: {} ({:?} total)",
+        overall_winner, min_total
+    );
 
     Ok(())
 }
+

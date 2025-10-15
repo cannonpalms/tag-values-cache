@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use interavl::IntervalTree;
 
-use crate::{CacheBuildError, IntervalCache, Timestamp};
+use crate::{CacheBuildError, HeapSize, IntervalCache, Timestamp};
 
 /// An interval cache implementation using the interavl AVL-based tree.
 ///
@@ -134,6 +134,35 @@ where
         // TODO: Merge adjacent intervals with same value for better efficiency
 
         Ok(())
+    }
+
+    fn size_bytes(&self) -> usize
+    where
+        V: HeapSize,
+    {
+        // Size of the InteravlCache struct itself
+        let mut size = std::mem::size_of::<Self>();
+
+        // Size of the intervals vector
+        // Each element is (Range<u64>, V)
+        size += self.intervals.capacity() * (std::mem::size_of::<Range<u64>>() + std::mem::size_of::<V>());
+
+        // Add heap size for values if they contain heap-allocated data
+        for (_, value) in &self.intervals {
+            size += value.heap_size();
+        }
+
+        // Size of the IntervalTree
+        // The interavl tree stores intervals and indices
+        // Estimate based on number of intervals
+        let tree_node_overhead = 40; // Estimated overhead per AVL tree node
+        size += self.intervals.len() * (
+            std::mem::size_of::<Range<u64>>() +  // Interval range
+            std::mem::size_of::<usize>() +        // Index value
+            tree_node_overhead                     // Tree node overhead (pointers, balance factor, etc.)
+        );
+
+        size
     }
 }
 

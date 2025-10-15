@@ -10,7 +10,7 @@ use std::ops::Range;
 
 use intervaltree::IntervalTree;
 
-use crate::{CacheBuildError, IntervalCache, Timestamp};
+use crate::{CacheBuildError, HeapSize, IntervalCache, Timestamp};
 
 /// An interval cache implementation using an interval tree.
 ///
@@ -69,6 +69,34 @@ where
         self.tree = all_intervals.into_iter().collect();
 
         Ok(())
+    }
+
+    fn size_bytes(&self) -> usize
+    where
+        V: HeapSize,
+    {
+        // Size of the IntervalTreeCache struct itself
+        let mut size = std::mem::size_of::<Self>();
+
+        // Count intervals and estimate their sizes
+        let mut interval_count = 0;
+        let mut total_value_size = 0;
+
+        for entry in self.tree.iter() {
+            interval_count += 1;
+            // Each interval entry contains:
+            // - Range<u64>: 16 bytes (2 u64s)
+            // - The value: we need to estimate its size
+            total_value_size += std::mem::size_of::<V>() + entry.value.heap_size();
+        }
+
+        // IntervalTree internal structure overhead
+        // The intervaltree crate uses a sorted Vec internally
+        // Each entry has: Range (16 bytes) + value + some overhead for the tree node
+        // Estimate ~32 bytes overhead per entry for tree structure
+        size += interval_count * (16 + 32) + total_value_size;
+
+        size
     }
 }
 

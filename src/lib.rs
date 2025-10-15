@@ -41,6 +41,92 @@ pub use vec_cache::VecCache;
 /// The type used for timestamps (nanoseconds since epoch)
 pub type Timestamp = u64;
 
+/// Trait for types that can estimate their heap-allocated memory size.
+///
+/// This trait should be implemented by types that allocate memory on the heap,
+/// allowing cache implementations to accurately track memory usage.
+pub trait HeapSize {
+    /// Returns the estimated number of bytes allocated on the heap by this value.
+    ///
+    /// This should NOT include the size of the value itself (size_of::<Self>()),
+    /// only the additional heap-allocated memory it owns.
+    fn heap_size(&self) -> usize;
+}
+
+// Implement HeapSize for common types
+impl HeapSize for String {
+    fn heap_size(&self) -> usize {
+        self.capacity()
+    }
+}
+
+impl<T> HeapSize for Vec<T> {
+    fn heap_size(&self) -> usize {
+        self.capacity() * std::mem::size_of::<T>()
+    }
+}
+
+impl<K: HeapSize, V: HeapSize> HeapSize for BTreeMap<K, V> {
+    fn heap_size(&self) -> usize {
+        // BTreeMap node overhead: approximately 40 bytes per node
+        const NODE_OVERHEAD: usize = 40;
+        let mut size = self.len() * NODE_OVERHEAD;
+
+        // Add the heap size of all keys and values
+        for (k, v) in self {
+            size += k.heap_size();
+            size += v.heap_size();
+        }
+
+        size
+    }
+}
+
+// Default implementation for types that don't allocate heap memory
+impl HeapSize for u8 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for u16 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for u32 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for u64 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for i8 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for i16 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for i32 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for i64 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for f32 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for f64 {
+    fn heap_size(&self) -> usize { 0 }
+}
+
+impl HeapSize for bool {
+    fn heap_size(&self) -> usize { 0 }
+}
+
 /// Errors that can occur when building an interval cache
 #[derive(thiserror::Error, Debug)]
 pub enum CacheBuildError {
@@ -189,6 +275,17 @@ where
     {
         self.append_sorted(SortedData::from_unsorted(points))
     }
+
+    /// Calculate the approximate memory usage of this cache in bytes.
+    ///
+    /// This includes the memory used by the data structures themselves,
+    /// as well as any heap-allocated memory they contain.
+    ///
+    /// # Returns
+    /// The estimated total memory usage in bytes.
+    fn size_bytes(&self) -> usize
+    where
+        V: HeapSize;
 }
 
 /// Builder pattern for creating interval caches with different configurations
@@ -361,6 +458,28 @@ impl PartialOrd for ArrowValue {
     }
 }
 
+impl HeapSize for ArrowValue {
+    fn heap_size(&self) -> usize {
+        match self {
+            ArrowValue::Null => 0,
+            ArrowValue::Boolean(_) => 0,
+            ArrowValue::Int8(_) => 0,
+            ArrowValue::Int16(_) => 0,
+            ArrowValue::Int32(_) => 0,
+            ArrowValue::Int64(_) => 0,
+            ArrowValue::UInt8(_) => 0,
+            ArrowValue::UInt16(_) => 0,
+            ArrowValue::UInt32(_) => 0,
+            ArrowValue::UInt64(_) => 0,
+            ArrowValue::Float32(_) => 0,
+            ArrowValue::Float64(_) => 0,
+            ArrowValue::String(s) => s.heap_size(),
+            ArrowValue::Binary(v) => v.heap_size(),
+            ArrowValue::Unsupported(s) => s.heap_size(),
+        }
+    }
+}
+
 /// A row of data from a RecordBatch, excluding the time column.
 /// This represents all column values for a specific timestamp.
 #[derive(Clone, Debug)]
@@ -413,6 +532,13 @@ impl Ord for RecordBatchRow {
 impl PartialOrd for RecordBatchRow {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+impl HeapSize for RecordBatchRow {
+    fn heap_size(&self) -> usize {
+        // The BTreeMap itself has heap allocation, plus the strings and ArrowValues
+        self.values.heap_size()
     }
 }
 

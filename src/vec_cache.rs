@@ -11,7 +11,7 @@
 use std::hash::Hash;
 use std::ops::Range;
 
-use crate::{CacheBuildError, IntervalCache, Timestamp};
+use crate::{CacheBuildError, HeapSize, IntervalCache, Timestamp};
 
 /// A cache implementation using three parallel vectors with binary search.
 ///
@@ -205,6 +205,36 @@ where
         }
 
         Ok(())
+    }
+
+    fn size_bytes(&self) -> usize
+    where
+        V: HeapSize,
+    {
+        // Size of the VecCache struct itself
+        let mut size = std::mem::size_of::<Self>();
+
+        // Size of the three vectors
+        // Each Vec has capacity * element_size bytes allocated
+
+        // starts vector (Vec<u64>)
+        size += self.starts.capacity() * std::mem::size_of::<u64>();
+
+        // ends vector (Vec<u64>)
+        size += self.ends.capacity() * std::mem::size_of::<u64>();
+
+        // values vector
+        // For the values, we need to account for both the vector's allocation
+        // and any heap memory the values themselves might use
+        size += self.values.capacity() * std::mem::size_of::<V>();
+
+        // Add heap size for values if they contain heap-allocated data
+        // For types like String or Vec, this would include their heap allocations
+        for value in &self.values {
+            size += value.heap_size();
+        }
+
+        size
     }
 }
 
