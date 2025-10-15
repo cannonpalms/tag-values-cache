@@ -19,7 +19,16 @@
 //! let values = cache.query_point(2);  // Returns ["A"]
 //! ```
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::ops::Range;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use arrow::array::{
+    as_dictionary_array, as_primitive_array, as_string_array, ArrayRef, RecordBatch,
+};
+use arrow::datatypes::{Int32Type, Schema, SchemaRef, TimestampNanosecondType};
 
 pub mod compare;
 pub mod interavl_cache;
@@ -221,4 +230,290 @@ where
     {
         InteravlCache::new(self.data)
     }
+}
+
+/// A row of data from a RecordBatch, excluding the time column.
+/// This represents all column values for a specific timestamp.
+#[derive(Clone, Debug)]
+pub struct RecordBatchRow {
+    /// Column names and their values as strings (for comparison)
+    pub values: BTreeMap<String, String>,
+}
+
+impl RecordBatchRow {
+    /// Create a new RecordBatchRow from column values
+    pub fn new(values: BTreeMap<String, String>) -> Self {
+        Self { values }
+    }
+}
+
+impl fmt::Display for RecordBatchRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parts: Vec<String> = self.values
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        write!(f, "{}", parts.join(","))
+    }
+}
+
+impl PartialEq for RecordBatchRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values
+    }
+}
+
+impl Eq for RecordBatchRow {}
+
+impl std::hash::Hash for RecordBatchRow {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for (k, v) in &self.values {
+            k.hash(state);
+            v.hash(state);
+        }
+    }
+}
+
+impl Ord for RecordBatchRow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.values.cmp(&other.values)
+    }
+}
+
+impl PartialOrd for RecordBatchRow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Extract timestamp and row data from a RecordBatch.
+///
+/// This function processes a RecordBatch and extracts timestamp-value pairs
+/// where the value contains all non-time columns for that row.
+///
+/// # Returns
+/// A vector of (timestamp, RecordBatchRow) pairs where RecordBatchRow
+/// contains all column data except the timestamp.
+pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatchRow)> {
+    use arrow::array::{Array, StringArray};
+    use arrow::datatypes::DataType;
+
+    let schema = batch.schema_ref();
+
+    // Find the timestamp column
+    let mut ts_idx = None;
+    let mut non_time_columns = Vec::new();
+
+    for (idx, field) in schema.fields().iter().enumerate() {
+        if let Some(column_type) = field.metadata().get("iox::column::type") {
+            if column_type == "iox::column_type::timestamp" {
+                ts_idx = Some(idx);
+            } else {
+                non_time_columns.push((idx, field.name().clone()));
+            }
+        } else {
+            // If no metadata, check field name for time column
+            if field.name().to_lowercase() == "time" ||
+               field.name().to_lowercase() == "timestamp" {
+                ts_idx = Some(idx);
+            } else {
+                non_time_columns.push((idx, field.name().clone()));
+            }
+        }
+    }
+
+    let ts_idx = ts_idx.unwrap_or(0);
+    let timestamps = as_primitive_array::<TimestampNanosecondType>(batch.column(ts_idx));
+
+    // Build results
+    let mut results = Vec::with_capacity(batch.num_rows());
+
+    for row_idx in 0..batch.num_rows() {
+        let ts = timestamps.value(row_idx) as u64;
+
+        // Collect all non-time column values for this row
+        let mut row_values = BTreeMap::new();
+
+        for &(col_idx, ref col_name) in &non_time_columns {
+            let array = batch.column(col_idx);
+
+            // Extract value as string for this row
+            let value_str = if !array.is_valid(row_idx) {
+                "null".to_string()
+            } else {
+                match array.data_type() {
+                    DataType::Dictionary(_, _) => {
+                        // Handle dictionary encoded columns (like tags)
+                        let dict_array = as_dictionary_array::<Int32Type>(array);
+                        if let Some(key) = dict_array.key(row_idx) {
+                            let values = as_string_array(dict_array.values());
+                            values.value(key).to_string()
+                        } else {
+                            "null".to_string()
+                        }
+                    }
+                    DataType::Utf8 => {
+                        array.as_any()
+                            .downcast_ref::<StringArray>()
+                            .map(|arr| arr.value(row_idx).to_string())
+                            .unwrap_or_else(|| "string_error".to_string())
+                    }
+                    DataType::Int64 => {
+                        array.as_any()
+                            .downcast_ref::<arrow::array::Int64Array>()
+                            .map(|arr| arr.value(row_idx).to_string())
+                            .unwrap_or_else(|| "int64_error".to_string())
+                    }
+                    DataType::Float64 => {
+                        array.as_any()
+                            .downcast_ref::<arrow::array::Float64Array>()
+                            .map(|arr| arr.value(row_idx).to_string())
+                            .unwrap_or_else(|| "float64_error".to_string())
+                    }
+                    DataType::Boolean => {
+                        array.as_any()
+                            .downcast_ref::<arrow::array::BooleanArray>()
+                            .map(|arr| arr.value(row_idx).to_string())
+                            .unwrap_or_else(|| "bool_error".to_string())
+                    }
+                    _ => {
+                        // For other types, try to get string representation
+                        format!("{:?}", array.data_type())
+                    }
+                }
+            };
+
+            row_values.insert(col_name.to_string(), value_str);
+        }
+
+        let row = RecordBatchRow::new(row_values);
+        results.push((ts, row));
+    }
+
+    results
+}
+
+/// Process multiple RecordBatches into sorted data with RecordBatchRow values.
+///
+/// This function processes all batches and returns them as SortedData
+/// ready for cache construction with full column data preserved.
+pub fn record_batches_to_row_data(
+    batches: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>
+) -> Result<SortedData<RecordBatchRow>, Box<dyn std::error::Error>> {
+    let mut all_points = Vec::new();
+
+    for batch in batches {
+        let batch = batch?;
+        let points = extract_rows_from_batch(batch);
+        all_points.extend(points);
+    }
+
+    Ok(SortedData::from_unsorted(all_points))
+}
+
+/// Extract timestamp and tag data from a RecordBatch.
+///
+/// This function processes a RecordBatch from a parquet file and extracts
+/// timestamp-value pairs where the value is a serialized representation
+/// of all tag columns for that row.
+///
+/// # Returns
+/// A vector of (timestamp, tag_string) pairs where tag_string contains
+/// all tags concatenated with their values.
+pub fn extract_time_series_from_batch(batch: RecordBatch) -> Vec<(Timestamp, String)> {
+    let schema = batch.schema_ref();
+
+    // Find the timestamp column
+    let mut ts_idx = None;
+    let mut tag_indices = BTreeMap::new();
+
+    for (idx, field) in schema.fields().iter().enumerate() {
+        if let Some(column_type) = field.metadata().get("iox::column::type") {
+            match column_type.as_str() {
+                "iox::column_type::timestamp" => ts_idx = Some(idx),
+                "iox::column_type::tag" => {
+                    tag_indices.insert(field.name().clone(), idx);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let ts_idx = match ts_idx {
+        Some(idx) => idx,
+        None => {
+            // Fallback: look for a column named "time" or similar
+            schema.fields().iter().position(|f| {
+                f.name().to_lowercase() == "time" ||
+                f.name().to_lowercase() == "timestamp"
+            }).unwrap_or(0)
+        }
+    };
+
+    let timestamps = as_primitive_array::<TimestampNanosecondType>(batch.column(ts_idx));
+
+    // Collect tag arrays
+    let tag_arrays: BTreeMap<String, _> = tag_indices
+        .iter()
+        .map(|(name, idx)| {
+            (name.clone(), as_dictionary_array::<Int32Type>(batch.column(*idx)))
+        })
+        .collect();
+
+    // Pre-extract dictionary values for efficiency
+    let tag_values: BTreeMap<String, Vec<Rc<str>>> = tag_arrays
+        .iter()
+        .map(|(name, arr)| {
+            let values = as_string_array(arr.values())
+                .iter()
+                .map(|v| Rc::from(v.unwrap_or("")))
+                .collect();
+            (name.clone(), values)
+        })
+        .collect();
+
+    // Build time-series pairs
+    let mut results = Vec::with_capacity(batch.num_rows());
+
+    for row in 0..batch.num_rows() {
+        let ts = timestamps.value(row) as u64;
+
+        // Collect tag values for this row
+        let mut tag_string_parts = Vec::new();
+        for (name, arr) in &tag_arrays {
+            if let Some(idx) = arr.key(row) {
+                if let Some(vals) = tag_values.get(name) {
+                    if let Some(val) = vals.get(idx) {
+                        if !val.is_empty() {
+                            tag_string_parts.push(format!("{}={}", name, val));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create composite tag string
+        let tag_string = tag_string_parts.join(",");
+        results.push((ts, tag_string));
+    }
+
+    results
+}
+
+/// Process multiple RecordBatches from a parquet reader into sorted data.
+///
+/// This is a convenience function that processes all batches from a reader
+/// and returns them as SortedData ready for cache construction.
+pub fn record_batches_to_sorted_data(
+    batches: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>
+) -> Result<SortedData<String>, Box<dyn std::error::Error>> {
+    let mut all_points = Vec::new();
+
+    for batch in batches {
+        let batch = batch?;
+        let points = extract_time_series_from_batch(batch);
+        all_points.extend(points);
+    }
+
+    Ok(SortedData::from_unsorted(all_points))
 }

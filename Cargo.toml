@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arrow = { version = "55.2" }
 interavl = "0.3.0"
 intervaltree = "0.2.7"
+parquet = { version = "55.2", features = ["arrow"] }
 thiserror = "2.0.17"

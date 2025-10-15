@@ -1,239 +1,240 @@
+use std::fs::File;
+use std::time::Instant;
+
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    compare::{benchmark_append, compare_build_times, compare_implementations, verify_equivalence},
-    CacheBuilder, InteravlCache, IntervalCache, IntervalTreeCache, SortedData, Timestamp,
-    VecCache,
+    record_batches_to_row_data, InteravlCache, IntervalCache, IntervalTreeCache, VecCache,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Example 1: Basic usage with string values
-    println!("=== Example 1: Basic String Values ===");
-    let data: Vec<(Timestamp, String)> = vec![
-        (0, "A".to_string()),
-        (1, "A".to_string()), // Will be merged with timestamp 0 into [0, 2)
-        (2, "A".to_string()), // Will be merged into [0, 3)
-        (5, "B".to_string()),
-        (6, "B".to_string()), // Will be merged with timestamp 5 into [5, 7)
-        (10, "A".to_string()), // New interval for "A" at [10, 11)
-        (15, "C".to_string()),
-    ];
+    println!("=== Tag Values Cache Benchmark ===\n");
 
-    // Direct construction
-    let cache = IntervalTreeCache::new(data.clone())?;
+    // Load the three parquet files
+    let file1_path = "test_fixtures/influxql_logs/influxql_log_1.parquet";
+    let file2_path = "test_fixtures/influxql_logs/influxql_log_2.parquet";
+    let file3_path = "test_fixtures/influxql_logs/influxql_log_3.parquet";
 
-    println!("Query at t=1: {:?}", cache.query_point(1));
-    println!("Query at t=3: {:?}", cache.query_point(3));  // Gap between intervals
-    println!("Query at t=5: {:?}", cache.query_point(5));
-    println!("Query at t=10: {:?}", cache.query_point(10));
-    println!("Query range [0, 6): {:?}", cache.query_range(0..6));
+    println!("Loading parquet files...");
 
-    // Using the builder pattern
-    println!("\n=== Using Builder Pattern ===");
-    let cache = CacheBuilder::new(data).build_interval_tree()?;
-    println!("Query range [5, 16): {:?}", cache.query_range(5..16));
+    // Load first file for building
+    let file1 = File::open(file1_path)?;
+    let builder1 = ParquetRecordBatchReaderBuilder::try_new(file1)?;
+    let reader1 = builder1.build()?;
+    let sorted_data1 = record_batches_to_row_data(reader1)?;
+    let num_points1 = sorted_data1.clone().into_inner().len();
+    println!("  File 1: {} data points", num_points1);
 
-    // Example 2: Multiple values at same timestamp
-    println!("\n=== Example 2: Overlapping Intervals ===");
-    let data: Vec<(Timestamp, &str)> = vec![
-        (0, "sensor1"),
-        (1, "sensor1"),
-        (2, "sensor1"),  // sensor1 creates interval [0, 3)
-        (1, "sensor2"),  // sensor2 starts at t=1
-        (2, "sensor2"),
-        (3, "sensor2"),  // sensor2 creates interval [1, 4)
-    ];
+    // Load second file for appending
+    let file2 = File::open(file2_path)?;
+    let builder2 = ParquetRecordBatchReaderBuilder::try_new(file2)?;
+    let reader2 = builder2.build()?;
+    let sorted_data2 = record_batches_to_row_data(reader2)?;
+    let num_points2 = sorted_data2.clone().into_inner().len();
+    println!("  File 2: {} data points", num_points2);
 
-    let cache = IntervalTreeCache::new(data)?;
+    // Load third file for appending
+    let file3 = File::open(file3_path)?;
+    let builder3 = ParquetRecordBatchReaderBuilder::try_new(file3)?;
+    let reader3 = builder3.build()?;
+    let sorted_data3 = record_batches_to_row_data(reader3)?;
+    let num_points3 = sorted_data3.clone().into_inner().len();
+    println!("  File 3: {} data points", num_points3);
 
-    println!("Query at t=0 (sensor1 only): {:?}", cache.query_point(0));
-    println!("Query at t=1 (overlapping): {:?}", cache.query_point(1));
-    println!("Query at t=2 (overlapping): {:?}", cache.query_point(2));
-    println!("Query at t=3 (sensor2 only): {:?}", cache.query_point(3));
+    println!("  Total: {} data points\n", num_points1 + num_points2 + num_points3);
 
-    // Example 3: Demonstrating interval merging
-    println!("\n=== Example 3: Interval Merging Behavior ===");
-    let data: Vec<(Timestamp, String)> = vec![
-        (0, "event_A".to_string()),
-        (1, "event_A".to_string()),
-        (2, "event_A".to_string()),  // Merges into [0, 3)
-        (10, "event_B".to_string()),
-        (11, "event_B".to_string()), // Merges into [10, 12)
-        (20, "event_A".to_string()), // New interval for A at [20, 21)
-    ];
-
-    let cache = IntervalTreeCache::new(data)?;
-
-    println!("Intervals created:");
-    println!("  event_A: [0, 3) and [20, 21)");
-    println!("  event_B: [10, 12)");
-    println!();
-    println!("Query at t=1: {:?}", cache.query_point(1));
-    println!("Query at t=5 (gap): {:?}", cache.query_point(5));
-    println!("Query at t=10: {:?}", cache.query_point(10));
-    println!("Query range [0, 25): {:?}", cache.query_range(0..25));
-
-    // Example 4: Generic usage and comparing all three implementations
-    println!("\n=== Example 4: Comparing All Three Implementations ===");
-
-    // Create test data with repeating pattern
-    let comparison_data: Vec<(Timestamp, String)> = (0..30)
-        .map(|i| {
-            let value = match i % 10 {
-                0..=2 => "A",  // Timestamps 0-2, 10-12, 20-22
-                3..=5 => "B",  // Timestamps 3-5, 13-15, 23-25
-                6..=7 => "C",  // Timestamps 6-7, 16-17, 26-27
-                _ => "D",      // Timestamps 8-9, 18-19, 28-29
-            };
-            (i, value.to_string())
-        })
-        .collect();
-
-    // Build all three cache types with the same data
-    let tree_cache = IntervalTreeCache::new(comparison_data.clone())?;
-    let vec_cache = VecCache::new(comparison_data.clone())?;
-    let avl_cache = InteravlCache::new(comparison_data)?;
-
-    // Generic function that works with ANY cache implementation
-    fn generic_analysis<C>(cache: &C, name: &str)
-    where
-        C: IntervalCache<String>,
-    {
-        println!("\n{} Analysis:", name);
-        let test_points = vec![0, 5, 10, 15, 20, 25];
-        for t in test_points {
-            println!("  t={:2}: {} values", t, cache.query_point(t).len());
-        }
+    // Show a sample of the data structure
+    println!("Sample data point:");
+    if let Some((ts, row)) = sorted_data1.clone().into_inner().first() {
+        println!("  Timestamp: {}", ts);
+        println!("  Columns: {:?}", row.values.keys().collect::<Vec<_>>());
+        println!("  Values: {}\n", row);
     }
 
-    // Use the same function with different implementations
-    generic_analysis(&tree_cache, "IntervalTreeCache");
-    generic_analysis(&vec_cache, "VecCache");
+    // Benchmark building from first file
+    println!("=== Build Performance ===");
+    println!("Building cache from {} points...\n", num_points1);
 
-    // Compare the implementations
-    let test_points: Vec<Timestamp> = (0..30).step_by(5).collect();
-    let test_ranges = vec![0..10, 10..20, 20..30];
+    // Benchmark IntervalTreeCache
+    let start = Instant::now();
+    let mut tree_cache = IntervalTreeCache::from_sorted(sorted_data1.clone())?;
+    let tree_build_time = start.elapsed();
+    println!("IntervalTreeCache: {:?}", tree_build_time);
 
-    println!("\n=== Verifying Equivalence ===");
-    let equivalent = verify_equivalence(&tree_cache, &vec_cache, &test_points, &test_ranges);
-    println!("Implementations produce identical results: {}", equivalent);
+    // Benchmark VecCache
+    let start = Instant::now();
+    let mut vec_cache = VecCache::from_sorted(sorted_data1.clone())?;
+    let vec_build_time = start.elapsed();
+    println!("VecCache:          {:?}", vec_build_time);
 
-    // Performance comparison
-    compare_implementations(
-        &tree_cache,
-        &vec_cache,
-        "IntervalTreeCache",
-        "VecCache",
-        &test_points,
-        &test_ranges,
-    );
+    // Benchmark InteravlCache
+    let start = Instant::now();
+    let mut avl_cache = InteravlCache::from_sorted(sorted_data1.clone())?;
+    let avl_build_time = start.elapsed();
+    println!("InteravlCache:     {:?}", avl_build_time);
 
-    // Example 5: Demonstrating append functionality
-    println!("\n=== Example 5: Append Functionality ===");
+    // Find fastest build
+    let min_build = tree_build_time.min(vec_build_time).min(avl_build_time);
+    let fastest_build = if min_build == vec_build_time {
+        "VecCache"
+    } else if min_build == tree_build_time {
+        "IntervalTreeCache"
+    } else {
+        "InteravlCache"
+    };
+    println!("\nFastest build: {}\n", fastest_build);
 
-    // Start with initial data
-    let initial_data = vec![
-        (0, "A".to_string()),
-        (1, "A".to_string()),
-        (2, "B".to_string()),
-    ];
+    // Benchmark append performance
+    println!("=== Append Performance ===");
+    println!("Appending {} + {} points...\n", num_points2, num_points3);
 
-    let mut cache = IntervalTreeCache::new(initial_data)?;
-    println!("Initial cache built");
-    println!("  Query at t=1: {:?}", cache.query_point(1));
+    // Append to IntervalTreeCache
+    let start = Instant::now();
+    tree_cache.append_sorted(sorted_data2.clone())?;
+    tree_cache.append_sorted(sorted_data3.clone())?;
+    let tree_append_time = start.elapsed();
+    println!("IntervalTreeCache: {:?}", tree_append_time);
 
-    // Append batch 1: extending existing interval
-    let batch1 = vec![
-        (3, "B".to_string()), // Extends B interval
-        (4, "B".to_string()),
-    ];
-    cache.append_batch(batch1)?;
-    println!("\nAfter appending batch 1:");
-    println!("  Query at t=3: {:?}", cache.query_point(3));
-    println!("  Query range [0, 5): {:?}", cache.query_range(0..5));
+    // Append to VecCache
+    let start = Instant::now();
+    vec_cache.append_sorted(sorted_data2.clone())?;
+    vec_cache.append_sorted(sorted_data3.clone())?;
+    let vec_append_time = start.elapsed();
+    println!("VecCache:          {:?}", vec_append_time);
 
-    // Append batch 2: adding new values
-    let batch2 = vec![
-        (10, "C".to_string()),
-        (11, "C".to_string()),
-        (15, "D".to_string()),
-    ];
-    cache.append_batch(batch2)?;
-    println!("\nAfter appending batch 2:");
-    println!("  Query at t=10: {:?}", cache.query_point(10));
-    println!("  Query range [0, 20): {:?}", cache.query_range(0..20));
+    // Append to InteravlCache
+    let start = Instant::now();
+    avl_cache.append_sorted(sorted_data2.clone())?;
+    avl_cache.append_sorted(sorted_data3)?;
+    let avl_append_time = start.elapsed();
+    println!("InteravlCache:     {:?}", avl_append_time);
 
-    // Example 6: Build time benchmarks
-    println!("\n=== Example 6: Build Time Benchmarks ===");
+    // Find fastest append
+    let min_append = tree_append_time.min(vec_append_time).min(avl_append_time);
+    let fastest_append = if min_append == vec_append_time {
+        "VecCache"
+    } else if min_append == tree_append_time {
+        "IntervalTreeCache"
+    } else {
+        "InteravlCache"
+    };
+    println!("\nFastest append: {}\n", fastest_append);
 
-    // Generate larger dataset for benchmarking
-    let benchmark_data: Vec<(Timestamp, String)> = (0..1000)
+    // Generate query test points
+    println!("=== Query Performance ===");
+
+    // Get some sample timestamps from the data for realistic queries
+    let all_data = sorted_data1.into_inner();
+    let sample_size = 1000.min(all_data.len());
+    let step = all_data.len() / sample_size;
+    let test_points: Vec<u64> = (0..sample_size)
+        .map(|i| all_data[i * step].0)
+        .collect();
+
+    let min_ts = all_data.first().map(|p| p.0).unwrap_or(0);
+    let max_ts = all_data.last().map(|p| p.0).unwrap_or(1000000);
+    let range_size = (max_ts - min_ts) / 10;
+    let test_ranges: Vec<std::ops::Range<u64>> = (0..10)
         .map(|i| {
-            let value = match i % 4 {
-                0 => "Type_A",
-                1 => "Type_B",
-                2 => "Type_C",
-                _ => "Type_D",
-            };
-            (i, value.to_string())
+            let start = min_ts + i * range_size;
+            let end = start + range_size;
+            start..end
         })
         .collect();
 
-    // Benchmark build times with 10 iterations
-    compare_build_times(benchmark_data.clone(), 10);
+    println!("Running {} point queries and {} range queries...\n", test_points.len(), test_ranges.len());
 
-    // Example 7: Append benchmarks
-    println!("\n=== Example 7: Append Performance ===");
+    // Benchmark point queries
+    println!("Point queries:");
 
-    // Create caches for append benchmarking
-    let initial: Vec<(Timestamp, String)> = (0..100)
-        .map(|i| (i, format!("initial_{}", i % 10)))
-        .collect();
+    let start = Instant::now();
+    for &t in &test_points {
+        let _ = tree_cache.query_point(t);
+    }
+    let tree_point_time = start.elapsed();
+    println!("  IntervalTreeCache: {:?}", tree_point_time);
 
-    let mut tree_cache = IntervalTreeCache::new(initial.clone())?;
-    let mut vec_cache = VecCache::new(initial.clone())?;
-    let mut avl_cache = InteravlCache::new(initial)?;
+    let start = Instant::now();
+    for &t in &test_points {
+        let _ = vec_cache.query_point(t);
+    }
+    let vec_point_time = start.elapsed();
+    println!("  VecCache:          {:?}", vec_point_time);
 
-    // Create batches for appending
-    let batches: Vec<SortedData<String>> = (0..5)
-        .map(|batch_idx| {
-            let start = 100 + batch_idx * 50;
-            let data: Vec<(Timestamp, String)> = (start..start + 50)
-                .map(|i| (i as u64, format!("batch_{}_{}", batch_idx, i % 5)))
-                .collect();
-            SortedData::from_unsorted(data)
-        })
-        .collect();
+    let start = Instant::now();
+    for &t in &test_points {
+        let _ = avl_cache.query_point(t);
+    }
+    let avl_point_time = start.elapsed();
+    println!("  InteravlCache:     {:?}", avl_point_time);
 
-    println!("Appending 5 batches of 50 items each:");
-    benchmark_append(&mut tree_cache, "IntervalTreeCache", batches.clone());
-    benchmark_append(&mut vec_cache, "VecCache", batches.clone());
-    benchmark_append(&mut avl_cache, "InteravlCache", batches);
+    // Find fastest point query
+    let min_point = tree_point_time.min(vec_point_time).min(avl_point_time);
+    let fastest_point = if min_point == vec_point_time {
+        "VecCache"
+    } else if min_point == tree_point_time {
+        "IntervalTreeCache"
+    } else {
+        "InteravlCache"
+    };
+    println!("\n  Fastest: {}", fastest_point);
 
-    // Example 8: Demonstrating sorted vs unsorted data
-    println!("\n=== Example 8: Sorted vs Unsorted Data ===");
+    // Benchmark range queries
+    println!("\nRange queries:");
 
-    let unsorted_data = vec![
-        (5, "B".to_string()),
-        (1, "A".to_string()),
-        (3, "A".to_string()),
-        (2, "A".to_string()),
-        (4, "B".to_string()),
-    ];
+    let start = Instant::now();
+    for range in &test_ranges {
+        let _ = tree_cache.query_range(range.clone());
+    }
+    let tree_range_time = start.elapsed();
+    println!("  IntervalTreeCache: {:?}", tree_range_time);
 
-    println!("Building from unsorted data (will sort automatically):");
-    let start = std::time::Instant::now();
-    let cache1 = IntervalTreeCache::new(unsorted_data.clone())?;
-    println!("  Time with automatic sorting: {:?}", start.elapsed());
+    let start = Instant::now();
+    for range in &test_ranges {
+        let _ = vec_cache.query_range(range.clone());
+    }
+    let vec_range_time = start.elapsed();
+    println!("  VecCache:          {:?}", vec_range_time);
 
-    println!("\nPre-sorting and using from_sorted:");
-    let start = std::time::Instant::now();
-    let sorted_data = SortedData::from_unsorted(unsorted_data);
-    let cache2 = IntervalTreeCache::from_sorted(sorted_data)?;
-    println!("  Time with pre-sorted data: {:?}", start.elapsed());
+    let start = Instant::now();
+    for range in &test_ranges {
+        let _ = avl_cache.query_range(range.clone());
+    }
+    let avl_range_time = start.elapsed();
+    println!("  InteravlCache:     {:?}", avl_range_time);
 
-    // Verify both produce same results
-    println!("\nVerifying both approaches produce same results:");
-    println!("  Cache1 query at t=2: {:?}", cache1.query_point(2));
-    println!("  Cache2 query at t=2: {:?}", cache2.query_point(2));
+    // Find fastest range query
+    let min_range = tree_range_time.min(vec_range_time).min(avl_range_time);
+    let fastest_range = if min_range == vec_range_time {
+        "VecCache"
+    } else if min_range == tree_range_time {
+        "IntervalTreeCache"
+    } else {
+        "InteravlCache"
+    };
+    println!("\n  Fastest: {}", fastest_range);
+
+    // Summary
+    println!("\n=== Summary ===");
+    println!("Build:        {} wins", fastest_build);
+    println!("Append:       {} wins", fastest_append);
+    println!("Point Query:  {} wins", fastest_point);
+    println!("Range Query:  {} wins", fastest_range);
+
+    // Calculate total times for overall winner
+    let tree_total = tree_build_time + tree_append_time + tree_point_time + tree_range_time;
+    let vec_total = vec_build_time + vec_append_time + vec_point_time + vec_range_time;
+    let avl_total = avl_build_time + avl_append_time + avl_point_time + avl_range_time;
+
+    let min_total = tree_total.min(vec_total).min(avl_total);
+    let overall_winner = if min_total == vec_total {
+        "VecCache"
+    } else if min_total == tree_total {
+        "IntervalTreeCache"
+    } else {
+        "InteravlCache"
+    };
+
+    println!("\nOverall winner: {} (total: {:?})", overall_winner, min_total);
 
     Ok(())
 }
