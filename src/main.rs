@@ -47,7 +47,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((ts, row)) = sorted_data1.clone().into_inner().first() {
         println!("  Timestamp: {}", ts);
         println!("  Columns: {:?}", row.values.keys().collect::<Vec<_>>());
-        println!("  Values: {}\n", row);
+        println!("  Values: {}", row);
+
+        // Show data types for first few columns
+        println!("\n  Column Types:");
+        for (name, value) in row.values.iter().take(6) {
+            let type_name = match value {
+                tag_values_cache::ArrowValue::Null => "Null",
+                tag_values_cache::ArrowValue::Boolean(_) => "Boolean",
+                tag_values_cache::ArrowValue::Int64(_) => "Int64",
+                tag_values_cache::ArrowValue::Float64(_) => "Float64",
+                tag_values_cache::ArrowValue::String(_) => "String",
+                tag_values_cache::ArrowValue::Binary(_) => "Binary",
+                _ => "Other",
+            };
+            println!("    {}: {} ({})", name, value, type_name);
+        }
+        println!();
     }
 
     // Benchmark building from first file
