@@ -107,4 +107,23 @@ where
 
         results
     }
+
+    fn append_batch(&mut self, mut new_points: Vec<(Timestamp, V)>) -> Result<(), CacheBuildError> {
+        if new_points.is_empty() {
+            return Ok(());
+        }
+
+        // Sort new points
+        new_points.sort_by_key(|(t, _)| *t);
+
+        // Build intervals from new points
+        let new_cache = Self::new(new_points)?;
+
+        // Simply append new intervals to existing ones
+        self.starts.extend(new_cache.starts);
+        self.ends.extend(new_cache.ends);
+        self.values.extend(new_cache.values);
+
+        Ok(())
+    }
 }

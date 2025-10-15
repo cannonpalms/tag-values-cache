@@ -102,4 +102,18 @@ where
             })
             .collect()
     }
+
+    fn append_batch(&mut self, new_points: Vec<(Timestamp, V)>) -> Result<(), CacheBuildError> {
+        // Build new intervals from new points
+        let new_cache = Self::new(new_points)?;
+
+        // Add new intervals to our collection
+        for (interval, value) in new_cache.intervals {
+            let idx = self.intervals.len();
+            self.intervals.push((interval.clone(), value));
+            self.tree.insert(interval, idx);
+        }
+
+        Ok(())
+    }
 }

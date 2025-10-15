@@ -38,4 +38,11 @@ where
 
     /// Query for all values that exist within a time range.
     fn query_range(&self, range: Range<Timestamp>) -> Vec<&V>;
+
+    /// Append a batch of new timestamp-value pairs to the cache.
+    ///
+    /// This method adds new data points to the existing cache, potentially
+    /// merging with existing intervals if the new data is consecutive with
+    /// existing intervals for the same value.
+    fn append_batch(&mut self, new_points: Vec<(Timestamp, V)>) -> Result<(), CacheBuildError>;
 }

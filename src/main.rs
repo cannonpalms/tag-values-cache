@@ -28,5 +28,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Query at t=6: {:?}", avl_cache.query_point(6));
     println!("Query range [0, 10): {:?}", avl_cache.query_range(0..10));
 
+    // Demonstrate batch appending
+    println!("\n=== Batch Append Example ===");
+    let initial_data = vec![
+        (0, "A".to_string()),
+        (1, "A".to_string()),
+    ];
+
+    let mut cache = IntervalTreeCache::new(initial_data)?;
+    println!("Initial cache - Query at t=0: {:?}", cache.query_point(0));
+
+    // Append new data
+    let batch1 = vec![
+        (2, "A".to_string()), // Extends existing interval
+        (5, "B".to_string()),
+    ];
+    cache.append_batch(batch1)?;
+    println!("After batch 1 - Query range [0, 6): {:?}", cache.query_range(0..6));
+
+    // Append more data
+    let batch2 = vec![
+        (10, "C".to_string()),
+        (11, "C".to_string()),
+    ];
+    cache.append_batch(batch2)?;
+    println!("After batch 2 - Query range [0, 12): {:?}", cache.query_range(0..12));
+
     Ok(())
 }

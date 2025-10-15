@@ -35,6 +35,36 @@ where
     fn query_range(&self, range: Range<Timestamp>) -> Vec<&V> {
         self.tree.query(range).map(|e| &e.value).collect()
     }
+
+    fn append_batch(&mut self, mut new_points: Vec<(Timestamp, V)>) -> Result<(), CacheBuildError> {
+        if new_points.is_empty() {
+            return Ok(());
+        }
+
+        // Sort new points
+        new_points.sort_by_key(|(t, _)| *t);
+
+        // Build new intervals from the new points
+        let new_tree = Self::build_multivalued_tree(new_points)?;
+
+        // Merge the new tree with the existing one
+        let mut all_intervals = Vec::new();
+
+        // Collect existing intervals
+        for entry in self.tree.iter() {
+            all_intervals.push((entry.range.clone(), entry.value.clone()));
+        }
+
+        // Collect new intervals
+        for entry in new_tree.iter() {
+            all_intervals.push((entry.range.clone(), entry.value.clone()));
+        }
+
+        // Rebuild the tree with all intervals
+        self.tree = all_intervals.into_iter().collect();
+
+        Ok(())
+    }
 }
 
 impl<V> IntervalTreeCache<V>
