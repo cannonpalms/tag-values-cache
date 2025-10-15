@@ -31,7 +31,17 @@ where
     fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
         // No sorting needed - data is guaranteed to be sorted
         let points = sorted_data.into_inner();
-        let tree = Self::build_multivalued_tree(points)?;
+        let temp_tree = Self::build_multivalued_tree(points)?;
+
+        // Extract all intervals and merge any that touch or overlap with same value
+        let intervals: Vec<(Range<u64>, V)> = temp_tree
+            .iter()
+            .map(|entry| (entry.range.clone(), entry.value.clone()))
+            .collect();
+
+        let merged = Self::merge_intervals(intervals);
+        let tree = merged.into_iter().collect();
+
         Ok(Self { tree })
     }
 

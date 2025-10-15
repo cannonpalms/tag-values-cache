@@ -121,13 +121,19 @@ where
 
         // Flush all remaining open intervals
         for (v, (start, end)) in open_intervals {
-            let interval = start..end;
-            let idx = intervals.len();
-            intervals.push((interval.clone(), v));
-            tree.insert(interval, idx);
+            intervals.push((start..end, v));
         }
 
-        Ok(Self { intervals, tree })
+        // Merge any intervals that touch or overlap with same value
+        let merged = Self::merge_intervals(intervals);
+
+        // Rebuild the tree with merged intervals
+        let mut tree = IntervalTree::default();
+        for (idx, (interval, _)) in merged.iter().enumerate() {
+            tree.insert(interval.clone(), idx);
+        }
+
+        Ok(Self { intervals: merged, tree })
     }
 
     fn query_point(&self, t: Timestamp) -> Vec<&V> {

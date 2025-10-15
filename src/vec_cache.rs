@@ -137,6 +137,26 @@ where
         ends.push(current_end);
         values.push(current_value);
 
+        // Merge any intervals that touch or overlap with same value
+        let intervals: Vec<(Range<u64>, V)> = starts
+            .into_iter()
+            .zip(ends.into_iter())
+            .zip(values.into_iter())
+            .map(|((start, end), value)| (start..end, value))
+            .collect();
+
+        let merged = Self::merge_intervals(intervals);
+
+        // Unpack back into separate vectors
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        let mut values = Vec::new();
+        for (range, value) in merged {
+            starts.push(range.start);
+            ends.push(range.end);
+            values.push(value);
+        }
+
         Ok(Self {
             starts,
             ends,
