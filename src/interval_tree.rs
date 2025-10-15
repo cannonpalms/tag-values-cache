@@ -269,7 +269,7 @@ mod tests {
         let data = vec![
             (1, "A".to_string()),
             (2, "A".to_string()),
-            (2, "B".to_string()),  // Different value at same timestamp
+            (2, "B".to_string()), // Different value at same timestamp
             (3, "B".to_string()),
         ];
 

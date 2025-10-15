@@ -42,7 +42,9 @@ where
     ///
     /// Takes a list of intervals and merges any that are adjacent (touching) or overlapping
     /// and have the same value. Also removes any duplicate intervals.
-    fn merge_intervals(mut intervals: Vec<(std::ops::Range<u64>, V)>) -> Vec<(std::ops::Range<u64>, V)> {
+    fn merge_intervals(
+        mut intervals: Vec<(std::ops::Range<u64>, V)>,
+    ) -> Vec<(std::ops::Range<u64>, V)> {
         if intervals.is_empty() {
             return intervals;
         }
@@ -245,7 +247,10 @@ where
 
         // Add new intervals
         for i in 0..new_cache.starts.len() {
-            all_intervals.push((new_cache.starts[i]..new_cache.ends[i], new_cache.values[i].clone()));
+            all_intervals.push((
+                new_cache.starts[i]..new_cache.ends[i],
+                new_cache.values[i].clone(),
+            ));
         }
 
         // Merge intervals using the same logic as other implementations

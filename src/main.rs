@@ -5,11 +5,15 @@ use std::time::{Duration, Instant};
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    InteravlCache, IntervalCache, IntervalTreeCache, SortedData, VecCache, extract_rows_from_batch, RecordBatchRow,
+    InteravlCache, IntervalCache, IntervalTreeCache, RecordBatchRow, SortedData, VecCache,
+    extract_rows_from_batch,
 };
 
 fn print_usage() {
-    println!("Usage: {} <parquet_path> [initial_rows] [append_rows]", env::args().next().unwrap_or_else(|| "program".to_string()));
+    println!(
+        "Usage: {} <parquet_path> [initial_rows] [append_rows]",
+        env::args().next().unwrap_or_else(|| "program".to_string())
+    );
     println!();
     println!("Arguments:");
     println!("  parquet_path  - Path to a parquet file or directory containing parquet files");
@@ -42,11 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (initial_rows, append_rows) = if args.len() >= 3 {
         // initial_rows provided
-        let initial: usize = args[2].parse()
+        let initial: usize = args[2]
+            .parse()
             .map_err(|_| format!("Invalid initial_rows: {}", args[2]))?;
 
         let append: usize = if args.len() > 3 {
-            args[3].parse()
+            args[3]
+                .parse()
                 .map_err(|_| format!("Invalid append_rows: {}", args[3]))?
         } else {
             0
@@ -59,7 +65,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // If initial_rows is specified, calculate total; otherwise use default limit
-    let total_rows = initial_rows.map(|i| i + append_rows).or(Some(DEFAULT_MAX_ROWS));
+    let total_rows = initial_rows
+        .map(|i| i + append_rows)
+        .or(Some(DEFAULT_MAX_ROWS));
 
     println!("=== Tag Values Cache Benchmark ===\n");
     println!("Configuration:");
@@ -69,7 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Append rows: {}", append_rows);
         println!("  Total rows: {}", initial + append_rows);
     } else {
-        println!("  Initial rows: all available (up to {} max)", DEFAULT_MAX_ROWS);
+        println!(
+            "  Initial rows: all available (up to {} max)",
+            DEFAULT_MAX_ROWS
+        );
         println!("  Append rows: 0");
     }
     println!();
@@ -174,14 +185,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Split the data based on configuration
     let (first_half, second_half) = if append_rows > 0 {
-        let split_point = initial_rows.unwrap_or(filtered_data.len() / 2).min(filtered_data.len());
+        let split_point = initial_rows
+            .unwrap_or(filtered_data.len() / 2)
+            .min(filtered_data.len());
         let (first, second) = filtered_data.split_at(split_point);
         println!("\nData split:");
         println!("  Initial: {} rows", first.len());
         println!("  Append:  {} rows", second.len());
         (first, second)
     } else {
-        println!("\nUsing all {} rows for initial build (no append)", filtered_data.len());
+        println!(
+            "\nUsing all {} rows for initial build (no append)",
+            filtered_data.len()
+        );
         (filtered_data.as_slice(), &[][..])
     };
 
@@ -205,21 +221,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut tree_cache = IntervalTreeCache::from_sorted(sorted_data1.clone())?;
     let tree_build_time = start.elapsed();
-    println!("  IntervalTreeCache: {:.2} ms", tree_build_time.as_secs_f64() * 1000.0);
+    println!(
+        "  IntervalTreeCache: {:.2} ms",
+        tree_build_time.as_secs_f64() * 1000.0
+    );
 
     // Benchmark VecCache
     println!("Building VecCache...");
     let start = Instant::now();
     let mut vec_cache = VecCache::from_sorted(sorted_data1.clone())?;
     let vec_build_time = start.elapsed();
-    println!("  VecCache: {:.2} ms", vec_build_time.as_secs_f64() * 1000.0);
+    println!(
+        "  VecCache: {:.2} ms",
+        vec_build_time.as_secs_f64() * 1000.0
+    );
 
     // Benchmark InteravlCache
     println!("Building InteravlCache...");
     let start = Instant::now();
     let mut avl_cache = InteravlCache::from_sorted(sorted_data1.clone())?;
     let avl_build_time = start.elapsed();
-    println!("  InteravlCache: {:.2} ms", avl_build_time.as_secs_f64() * 1000.0);
+    println!(
+        "  InteravlCache: {:.2} ms",
+        avl_build_time.as_secs_f64() * 1000.0
+    );
 
     // Find fastest build
     let min_build = tree_build_time.min(vec_build_time).min(avl_build_time);
@@ -233,42 +258,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nFastest build: {}\n", fastest_build);
 
     // Report number of intervals after initial build
-    println!("Intervals after initial build ({} data points):", first_half.len());
-    println!("  IntervalTreeCache: {} intervals", tree_cache.interval_count());
-    println!("  VecCache:          {} intervals", vec_cache.interval_count());
-    println!("  InteravlCache:     {} intervals\n", avl_cache.interval_count());
+    println!(
+        "Intervals after initial build ({} data points):",
+        first_half.len()
+    );
+    println!(
+        "  IntervalTreeCache: {} intervals",
+        tree_cache.interval_count()
+    );
+    println!(
+        "  VecCache:          {} intervals",
+        vec_cache.interval_count()
+    );
+    println!(
+        "  InteravlCache:     {} intervals\n",
+        avl_cache.interval_count()
+    );
 
     // Benchmark append performance (if configured)
-    let (tree_append_time, vec_append_time, avl_append_time) = if let Some(sorted_data2) = sorted_data2 {
-        println!("=== Append Performance ===");
-        println!("Appending {} rows...\n", second_half.len());
+    let (tree_append_time, vec_append_time, avl_append_time) =
+        if let Some(sorted_data2) = sorted_data2 {
+            println!("=== Append Performance ===");
+            println!("Appending {} rows...\n", second_half.len());
 
-        // Append to IntervalTreeCache
-        println!("Appending to IntervalTreeCache...");
-        let start = Instant::now();
-        tree_cache.append_sorted(sorted_data2.clone())?;
-        let tree_append = start.elapsed();
-        println!("  IntervalTreeCache: {:.2} ms", tree_append.as_secs_f64() * 1000.0);
+            // Append to IntervalTreeCache
+            println!("Appending to IntervalTreeCache...");
+            let start = Instant::now();
+            tree_cache.append_sorted(sorted_data2.clone())?;
+            let tree_append = start.elapsed();
+            println!(
+                "  IntervalTreeCache: {:.2} ms",
+                tree_append.as_secs_f64() * 1000.0
+            );
 
-        // Append to VecCache
-        println!("Appending to VecCache...");
-        let start = Instant::now();
-        vec_cache.append_sorted(sorted_data2.clone())?;
-        let vec_append = start.elapsed();
-        println!("  VecCache: {:.2} ms", vec_append.as_secs_f64() * 1000.0);
+            // Append to VecCache
+            println!("Appending to VecCache...");
+            let start = Instant::now();
+            vec_cache.append_sorted(sorted_data2.clone())?;
+            let vec_append = start.elapsed();
+            println!("  VecCache: {:.2} ms", vec_append.as_secs_f64() * 1000.0);
 
-        // Append to InteravlCache
-        println!("Appending to InteravlCache...");
-        let start = Instant::now();
-        avl_cache.append_sorted(sorted_data2)?;
-        let avl_append = start.elapsed();
-        println!("  InteravlCache: {:.2} ms", avl_append.as_secs_f64() * 1000.0);
+            // Append to InteravlCache
+            println!("Appending to InteravlCache...");
+            let start = Instant::now();
+            avl_cache.append_sorted(sorted_data2)?;
+            let avl_append = start.elapsed();
+            println!(
+                "  InteravlCache: {:.2} ms",
+                avl_append.as_secs_f64() * 1000.0
+            );
 
-        (tree_append, vec_append, avl_append)
-    } else {
-        // No append phase
-        (Duration::from_secs(0), Duration::from_secs(0), Duration::from_secs(0))
-    };
+            (tree_append, vec_append, avl_append)
+        } else {
+            // No append phase
+            (
+                Duration::from_secs(0),
+                Duration::from_secs(0),
+                Duration::from_secs(0),
+            )
+        };
 
     // Find fastest append (if append was performed)
     let (min_append, fastest_append) = if append_rows > 0 {
@@ -287,11 +335,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Report final number of intervals
-    let final_label = if append_rows > 0 { "after append" } else { "final" };
-    println!("Intervals {} ({} total data points):", final_label, first_half.len() + second_half.len());
-    println!("  IntervalTreeCache: {} intervals", tree_cache.interval_count());
-    println!("  VecCache:          {} intervals", vec_cache.interval_count());
-    println!("  InteravlCache:     {} intervals", avl_cache.interval_count());
+    let final_label = if append_rows > 0 {
+        "after append"
+    } else {
+        "final"
+    };
+    println!(
+        "Intervals {} ({} total data points):",
+        final_label,
+        first_half.len() + second_half.len()
+    );
+    println!(
+        "  IntervalTreeCache: {} intervals",
+        tree_cache.interval_count()
+    );
+    println!(
+        "  VecCache:          {} intervals",
+        vec_cache.interval_count()
+    );
+    println!(
+        "  InteravlCache:     {} intervals",
+        avl_cache.interval_count()
+    );
 
     // Calculate compression ratio
     let total_points = first_half.len() + second_half.len();
@@ -338,21 +403,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tree_cache.query_point(t);
     }
     let tree_point_time = start.elapsed();
-    println!("  IntervalTreeCache: {:.2} ms", tree_point_time.as_secs_f64() * 1000.0);
+    println!(
+        "  IntervalTreeCache: {:.2} ms",
+        tree_point_time.as_secs_f64() * 1000.0
+    );
 
     let start = Instant::now();
     for &t in &test_points {
         let _ = vec_cache.query_point(t);
     }
     let vec_point_time = start.elapsed();
-    println!("  VecCache: {:.2} ms", vec_point_time.as_secs_f64() * 1000.0);
+    println!(
+        "  VecCache: {:.2} ms",
+        vec_point_time.as_secs_f64() * 1000.0
+    );
 
     let start = Instant::now();
     for &t in &test_points {
         let _ = avl_cache.query_point(t);
     }
     let avl_point_time = start.elapsed();
-    println!("  InteravlCache: {:.2} ms", avl_point_time.as_secs_f64() * 1000.0);
+    println!(
+        "  InteravlCache: {:.2} ms",
+        avl_point_time.as_secs_f64() * 1000.0
+    );
 
     // Find fastest point query
     let min_point = tree_point_time.min(vec_point_time).min(avl_point_time);
@@ -373,21 +447,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tree_cache.query_range(range.clone());
     }
     let tree_range_time = start.elapsed();
-    println!("  IntervalTreeCache: {:.2} ms", tree_range_time.as_secs_f64() * 1000.0);
+    println!(
+        "  IntervalTreeCache: {:.2} ms",
+        tree_range_time.as_secs_f64() * 1000.0
+    );
 
     let start = Instant::now();
     for range in &test_ranges {
         let _ = vec_cache.query_range(range.clone());
     }
     let vec_range_time = start.elapsed();
-    println!("  VecCache: {:.2} ms", vec_range_time.as_secs_f64() * 1000.0);
+    println!(
+        "  VecCache: {:.2} ms",
+        vec_range_time.as_secs_f64() * 1000.0
+    );
 
     let start = Instant::now();
     for range in &test_ranges {
         let _ = avl_cache.query_range(range.clone());
     }
     let avl_range_time = start.elapsed();
-    println!("  InteravlCache: {:.2} ms", avl_range_time.as_secs_f64() * 1000.0);
+    println!(
+        "  InteravlCache: {:.2} ms",
+        avl_range_time.as_secs_f64() * 1000.0
+    );
 
     // Find fastest range query
     let min_range = tree_range_time.min(vec_range_time).min(avl_range_time);
@@ -442,12 +525,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         first_half.len() + second_half.len()
     );
     println!("\nPerformance winners:");
-    println!("  Build:        {} ({:.2} ms)", fastest_build, min_build.as_secs_f64() * 1000.0);
+    println!(
+        "  Build:        {} ({:.2} ms)",
+        fastest_build,
+        min_build.as_secs_f64() * 1000.0
+    );
     if append_rows > 0 {
-        println!("  Append:       {} ({:.2} ms)", fastest_append, min_append.as_secs_f64() * 1000.0);
+        println!(
+            "  Append:       {} ({:.2} ms)",
+            fastest_append,
+            min_append.as_secs_f64() * 1000.0
+        );
     }
-    println!("  Point Query:  {} ({:.2} ms)", fastest_point, min_point.as_secs_f64() * 1000.0);
-    println!("  Range Query:  {} ({:.2} ms)", fastest_range, min_range.as_secs_f64() * 1000.0);
+    println!(
+        "  Point Query:  {} ({:.2} ms)",
+        fastest_point,
+        min_point.as_secs_f64() * 1000.0
+    );
+    println!(
+        "  Range Query:  {} ({:.2} ms)",
+        fastest_range,
+        min_range.as_secs_f64() * 1000.0
+    );
     println!(
         "  Memory:       {} ({} MB)",
         lowest_memory,

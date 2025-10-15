@@ -22,7 +22,7 @@ where
     /// Maps each interval to its associated value
     intervals: Vec<(Range<u64>, V)>,
     /// The AVL-based interval tree for efficient queries
-    tree: IntervalTree<u64, usize>,  // usize is index into intervals vec
+    tree: IntervalTree<u64, usize>, // usize is index into intervals vec
 }
 
 impl<V> InteravlCache<V>
@@ -133,7 +133,10 @@ where
             tree.insert(interval.clone(), idx);
         }
 
-        Ok(Self { intervals: merged, tree })
+        Ok(Self {
+            intervals: merged,
+            tree,
+        })
     }
 
     fn query_point(&self, t: Timestamp) -> Vec<&V> {
@@ -141,9 +144,7 @@ where
 
         self.tree
             .iter_overlaps(&point_interval)
-            .filter_map(|(_, idx)| {
-                self.intervals.get(*idx).map(|(_, v)| v)
-            })
+            .filter_map(|(_, idx)| self.intervals.get(*idx).map(|(_, v)| v))
             .collect()
     }
 
@@ -153,13 +154,11 @@ where
         self.tree
             .iter_overlaps(&range)
             .filter_map(|(_, idx)| {
-                self.intervals.get(*idx).and_then(|(_, v)| {
-                    if seen.insert(v) {
-                        Some(v)
-                    } else {
-                        None
-                    }
-                })
+                self.intervals.get(*idx).and_then(
+                    |(_, v)| {
+                        if seen.insert(v) { Some(v) } else { None }
+                    },
+                )
             })
             .collect()
     }
@@ -194,7 +193,8 @@ where
 
         // Size of the intervals vector
         // Each element is (Range<u64>, V)
-        size += self.intervals.capacity() * (std::mem::size_of::<Range<u64>>() + std::mem::size_of::<V>());
+        size += self.intervals.capacity()
+            * (std::mem::size_of::<Range<u64>>() + std::mem::size_of::<V>());
 
         // Add heap size for values if they contain heap-allocated data
         for (_, value) in &self.intervals {
@@ -205,11 +205,13 @@ where
         // The interavl tree stores intervals and indices
         // Estimate based on number of intervals
         let tree_node_overhead = 40; // Estimated overhead per AVL tree node
-        size += self.intervals.len() * (
-            std::mem::size_of::<Range<u64>>() +  // Interval range
+        size += self.intervals.len()
+            * (
+                std::mem::size_of::<Range<u64>>() +  // Interval range
             std::mem::size_of::<usize>() +        // Index value
-            tree_node_overhead                     // Tree node overhead (pointers, balance factor, etc.)
-        );
+            tree_node_overhead
+                // Tree node overhead (pointers, balance factor, etc.)
+            );
 
         size
     }

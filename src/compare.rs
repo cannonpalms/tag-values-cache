@@ -122,7 +122,10 @@ where
         results2.sort();
 
         if results1 != results2 {
-            println!("Mismatch in range {:?}: {:?} vs {:?}", range, results1, results2);
+            println!(
+                "Mismatch in range {:?}: {:?} vs {:?}",
+                range, results1, results2
+            );
             return false;
         }
     }
@@ -133,11 +136,7 @@ where
 /// Benchmark the build time of a cache implementation.
 ///
 /// Measures how long it takes to build a cache from sorted data.
-pub fn benchmark_build<C, V, F>(
-    name: &str,
-    sorted_data: SortedData<V>,
-    build_fn: F,
-) -> Duration
+pub fn benchmark_build<C, V, F>(name: &str, sorted_data: SortedData<V>, build_fn: F) -> Duration
 where
     V: Clone + Eq + std::hash::Hash,
     F: FnOnce(SortedData<V>) -> Result<C, crate::CacheBuildError>,
@@ -151,11 +150,7 @@ where
 }
 
 /// Benchmark append operations on different cache implementations.
-pub fn benchmark_append<C, V>(
-    cache: &mut C,
-    name: &str,
-    batches: Vec<SortedData<V>>,
-) -> Duration
+pub fn benchmark_append<C, V>(cache: &mut C, name: &str, batches: Vec<SortedData<V>>) -> Duration
 where
     C: IntervalCache<V>,
     V: Clone + Eq + std::hash::Hash,
@@ -178,10 +173,8 @@ where
 }
 
 /// Compare build times for multiple cache implementations.
-pub fn compare_build_times<V>(
-    data: Vec<(Timestamp, V)>,
-    iterations: usize,
-) where
+pub fn compare_build_times<V>(data: Vec<(Timestamp, V)>, iterations: usize)
+where
     V: Clone + Eq + std::hash::Hash + Ord,
 {
     println!("\nBuild Time Comparison ({} iterations)", iterations);
