@@ -40,12 +40,12 @@ where
         }
 
         // Build intervals by merging consecutive identical values
-        let mut current_start = points[0].0;
-        let mut current_end = points[0]
+        let current_start = points[0].0;
+        let current_end = points[0]
             .0
             .checked_add(1)
             .ok_or(CacheBuildError::TimestampOverflow(points[0].0))?;
-        let mut current_value = points[0].1.clone();
+        let current_value = points[0].1.clone();
 
         // Track open intervals for each value to handle overlapping
         let mut open_intervals: HashMap<V, (u64, u64)> = HashMap::new();
@@ -123,7 +123,7 @@ where
 
         // Add new intervals to our collection
         // The indices need to be offset by the current number of intervals
-        let offset = self.intervals.len();
+        let _offset = self.intervals.len();
 
         for (interval, value) in new_cache.intervals {
             let idx = self.intervals.len();

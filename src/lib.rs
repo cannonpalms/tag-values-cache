@@ -23,12 +23,11 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use arrow::array::{
-    as_dictionary_array, as_primitive_array, as_string_array, ArrayRef, RecordBatch,
+    as_dictionary_array, as_primitive_array, as_string_array, RecordBatch,
 };
-use arrow::datatypes::{Int32Type, Schema, SchemaRef, TimestampNanosecondType};
+use arrow::datatypes::{Int32Type, TimestampNanosecondType};
 
 pub mod compare;
 pub mod interavl_cache;
