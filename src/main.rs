@@ -73,36 +73,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sorted_data2 = SortedData::from_unsorted(second_half.to_vec());
     println!("  Sorting completed in {:?}", start_sort.elapsed());
 
-    // Show a sample of the data structure
-    println!("\nSample data point:");
-    if let Some((ts, row)) = sorted_data1.clone().into_inner().first() {
-        println!("  Timestamp: {}", ts);
-        println!("  Number of columns: {}", row.values.len());
-
-        // Show first few columns with their types
-        println!("  First 5 columns:");
-        for (name, value) in row.values.iter().take(5) {
-            let type_name = match value {
-                tag_values_cache::ArrowValue::Null => "Null",
-                tag_values_cache::ArrowValue::Boolean(_) => "Boolean",
-                tag_values_cache::ArrowValue::Int8(_) => "Int8",
-                tag_values_cache::ArrowValue::Int16(_) => "Int16",
-                tag_values_cache::ArrowValue::Int32(_) => "Int32",
-                tag_values_cache::ArrowValue::Int64(_) => "Int64",
-                tag_values_cache::ArrowValue::UInt8(_) => "UInt8",
-                tag_values_cache::ArrowValue::UInt16(_) => "UInt16",
-                tag_values_cache::ArrowValue::UInt32(_) => "UInt32",
-                tag_values_cache::ArrowValue::UInt64(_) => "UInt64",
-                tag_values_cache::ArrowValue::Float32(_) => "Float32",
-                tag_values_cache::ArrowValue::Float64(_) => "Float64",
-                tag_values_cache::ArrowValue::String(_) => "String",
-                tag_values_cache::ArrowValue::Binary(_) => "Binary",
-                tag_values_cache::ArrowValue::Unsupported(_) => "Unsupported",
-            };
-            println!("    {}: {} ({})", name, value, type_name);
-        }
-    }
-
     // Benchmark building from first half
     println!("\n=== Build Performance ===");
     println!("Building cache from {} rows...\n", first_half.len());
