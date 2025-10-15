@@ -1,4 +1,12 @@
 //! A simple vector-based implementation using parallel vectors with shared indexing.
+//!
+//! This implementation stores intervals as three parallel vectors:
+//! - starts: interval start times
+//! - ends: interval end times
+//! - values: the values for each interval
+//!
+//! This demonstrates how different data structures can implement the same
+//! IntervalCache trait interface.
 
 use std::hash::Hash;
 use std::ops::Range;
@@ -6,6 +14,9 @@ use std::ops::Range;
 use crate::{CacheBuildError, IntervalCache, Timestamp};
 
 /// A cache implementation using three parallel vectors.
+///
+/// This is a simpler (though potentially less efficient for large datasets)
+/// alternative to the interval tree implementation.
 pub struct VecCache<V>
 where
     V: Clone + Eq + Hash,
@@ -22,9 +33,8 @@ impl<V> IntervalCache<V> for VecCache<V>
 where
     V: Clone + Eq + Hash,
 {
-    fn new(mut points: Vec<(Timestamp, V)>) -> Result<Self, CacheBuildError> {
-        // Sort points by timestamp
-        points.sort_by_key(|(t, _)| *t);
+    fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
+        let points = sorted_data.into_inner();
 
         let mut starts = Vec::new();
         let mut ends = Vec::new();
@@ -108,22 +118,54 @@ where
         results
     }
 
-    fn append_batch(&mut self, mut new_points: Vec<(Timestamp, V)>) -> Result<(), CacheBuildError> {
-        if new_points.is_empty() {
-            return Ok(());
-        }
-
-        // Sort new points
-        new_points.sort_by_key(|(t, _)| *t);
-
-        // Build intervals from new points
-        let new_cache = Self::new(new_points)?;
+    fn append_sorted(&mut self, sorted_data: crate::SortedData<V>) -> Result<(), CacheBuildError> {
+        // Build intervals from sorted points
+        let new_cache = Self::from_sorted(sorted_data)?;
 
         // Simply append new intervals to existing ones
+        // TODO: Merge adjacent intervals with same value for better efficiency
         self.starts.extend(new_cache.starts);
         self.ends.extend(new_cache.ends);
         self.values.extend(new_cache.values);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vec_cache_basic() {
+        let data = vec![
+            (1, "A".to_string()),
+            (2, "A".to_string()),
+            (4, "B".to_string()),
+        ];
+
+        let cache = VecCache::new(data).unwrap();
+
+        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
+        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
+        assert_eq!(cache.query_point(3), Vec::<&String>::new());
+        assert_eq!(cache.query_point(4), vec![&"B".to_string()]);
+    }
+
+    #[test]
+    fn test_vec_cache_range() {
+        let data = vec![
+            (1, "A".to_string()),
+            (2, "A".to_string()),
+            (5, "B".to_string()),
+            (6, "C".to_string()),
+        ];
+
+        let cache = VecCache::new(data).unwrap();
+
+        let range_values = cache.query_range(1..6);
+        assert_eq!(range_values.len(), 2);
+        assert!(range_values.iter().any(|v| **v == "A".to_string()));
+        assert!(range_values.iter().any(|v| **v == "B".to_string()));
     }
 }
