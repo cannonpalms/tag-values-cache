@@ -3,25 +3,25 @@ use std::fmt::{Debug, Display};
 fn main() {
     let mut tree = interavl::IntervalTree::default();
 
-    tree.insert(1..5, 0);
+    tree.insert(1..5, "A");
     print_tree(&tree);
 
-    tree.insert(10..15, 1);
+    tree.insert(10..15, "B");
     print_tree(&tree);
 
-    tree.insert(20..25, 2);
+    tree.insert(20..25, "C");
     print_tree(&tree);
 
     // Overlapping interval
-    tree.insert(12..18, 3);
+    tree.insert(12..18, "D");
     print_tree(&tree);
 
     // Duplicate interval & value -- no node added
-    tree.insert(12..18, 3);
+    tree.insert(12..18, "D");
     print_tree(&tree);
 
     // Duplicate interval, different value -- old node gets updated to new value
-    tree.insert(12..18, 4);
+    tree.insert(12..18, "E");
     print_tree(&tree);
 
     // Print DOT format

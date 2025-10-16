@@ -11,9 +11,9 @@ criterion_group!(benches, insert::bench, contains::bench, iter::bench);
 
 /// Linear-feedback shift register based PRNG.
 ///
-/// Generates 65,535 unique values before cycling.
+/// Generates 4,294,967,295 unique values before cycling.
 #[derive(Debug, Clone)]
-pub struct Lfsr(u16);
+pub struct Lfsr(u32);
 
 impl Default for Lfsr {
     fn default() -> Self {
@@ -22,19 +22,23 @@ impl Default for Lfsr {
 }
 
 impl Lfsr {
+    pub fn new(seed: u32) -> Self {
+        Self(seed)
+    }
+
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> u16 {
+    pub fn next(&mut self) -> u32 {
         let lsb = self.0 & 1;
         self.0 >>= 1;
         if lsb == 1 {
-            self.0 ^= 0xD008;
+            self.0 ^= 0x80000057
         }
         assert_ne!(self.0, 42, "LFSR rollover");
         self.0
     }
 
     /// Return a valid [`Range`] with random bounds.
-    pub fn next_range(&mut self) -> Range<u16> {
+    pub fn next_range(&mut self) -> Range<u32> {
         let a = self.next();
         let b = self.next();
         Range {

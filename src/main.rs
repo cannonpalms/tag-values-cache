@@ -460,30 +460,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Benchmark point queries
     println!("Point queries ({} queries):", test_points.len());
 
+    use std::hint::black_box;
     let start = Instant::now();
     for &t in &test_points {
-        let _ = tree_cache.query_point(t);
+        black_box(tree_cache.query_point(t));
     }
     let tree_point_time = start.elapsed();
     println!("  IntervalTreeCache: {}", format_duration(tree_point_time));
 
     let start = Instant::now();
     for &t in &test_points {
-        let _ = vec_cache.query_point(t);
+        black_box(vec_cache.query_point(t));
     }
     let vec_point_time = start.elapsed();
     println!("  VecCache: {}", format_duration(vec_point_time));
 
     let start = Instant::now();
     for &t in &test_points {
-        let _ = avl_cache.query_point(t);
+        black_box(avl_cache.query_point(t));
     }
     let avl_point_time = start.elapsed();
     println!("  InteravlCache: {}", format_duration(avl_point_time));
 
     let start = Instant::now();
     for &t in &test_points {
-        let _ = avl_alt_cache.query_point(t);
+        black_box(avl_alt_cache.query_point(t));
     }
     let avl_alt_point_time = start.elapsed();
     println!(
@@ -512,28 +513,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     for range in &test_ranges {
-        let _ = tree_cache.query_range(range.clone());
+        black_box(tree_cache.query_range(range.clone()));
     }
     let tree_range_time = start.elapsed();
     println!("  IntervalTreeCache: {}", format_duration(tree_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        let _ = vec_cache.query_range(range.clone());
+        black_box(vec_cache.query_range(range.clone()));
     }
     let vec_range_time = start.elapsed();
     println!("  VecCache: {}", format_duration(vec_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        let _ = avl_cache.query_range(range.clone());
+        black_box(avl_cache.query_range(range.clone()));
     }
     let avl_range_time = start.elapsed();
     println!("  InteravlCache: {}", format_duration(avl_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        let _ = avl_alt_cache.query_range(range.clone());
+        black_box(avl_alt_cache.query_range(range.clone()));
     }
     let avl_alt_range_time = start.elapsed();
     println!(

@@ -20,7 +20,7 @@ impl From<BenchName> for BenchmarkId {
 pub(super) fn bench(c: &mut Criterion) {
     let mut g = c.benchmark_group("iter");
 
-    for n_values in [1, 100, 1_000, 10_000] {
+    for n_values in [1, 100, 1_000, 10_000, 100_000] {
         bench_param(&mut g, n_values)
     }
 }
@@ -50,7 +50,7 @@ where
     bench_contains(n_values, g, &t);
 }
 
-fn bench_iter<M>(n_values: usize, g: &mut BenchmarkGroup<M>, t: &IntervalTree<u16, usize>)
+fn bench_iter<M>(n_values: usize, g: &mut BenchmarkGroup<M>, t: &IntervalTree<u32, usize>)
 where
     M: Measurement,
 {
@@ -76,7 +76,7 @@ macro_rules! iter_bench {
         $name:ident
     ) => {
         paste::paste! {
-            fn [<bench_ $name>]<M>(n_values: usize, g: &mut BenchmarkGroup<M>, t: &IntervalTree<u16, usize>)
+            fn [<bench_ $name>]<M>(n_values: usize, g: &mut BenchmarkGroup<M>, t: &IntervalTree<u32, usize>)
             where
                 M: Measurement,
             {
