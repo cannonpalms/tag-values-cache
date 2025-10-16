@@ -3,6 +3,10 @@ name = "tag-values-cache"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "scratch"
+path = "src/bin/scratch.rs"
+
 [dependencies]
 arrow = { version = "55.2" }
 interavl = "0.3.0"
