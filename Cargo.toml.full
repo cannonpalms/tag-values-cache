@@ -1,9 +1,0 @@
-[package]
-name = "tag-values-cache"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-interavl = "0.3.0"
-intervaltree = "0.2.7"
-thiserror = "2.0.17"
