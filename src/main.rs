@@ -31,6 +31,25 @@ fn print_usage() {
     println!("  cargo run --release test_fixtures/clickbench/hits.parquet 500000 500000");
 }
 
+/// Format a duration in the most appropriate unit (µs, ms, or s) with limited decimal places
+fn format_duration(duration: Duration) -> String {
+    let nanos = duration.as_nanos();
+
+    if nanos < 1_000 {
+        // Less than 1 microsecond - show in nanoseconds
+        format!("{} ns", nanos)
+    } else if nanos < 1_000_000 {
+        // Less than 1 millisecond - show in microseconds
+        format!("{:.2} µs", nanos as f64 / 1_000.0)
+    } else if nanos < 1_000_000_000 {
+        // Less than 1 second - show in milliseconds
+        format!("{:.2} ms", nanos as f64 / 1_000_000.0)
+    } else {
+        // 1 second or more - show in seconds
+        format!("{:.2} s", nanos as f64 / 1_000_000_000.0)
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
@@ -221,40 +240,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut tree_cache = IntervalTreeCache::from_sorted(sorted_data1.clone())?;
     let tree_build_time = start.elapsed();
-    println!(
-        "  IntervalTreeCache: {:.2} ms",
-        tree_build_time.as_secs_f64() * 1000.0
-    );
+    println!("  IntervalTreeCache: {}", format_duration(tree_build_time));
 
     // Benchmark VecCache
     println!("Building VecCache...");
     let start = Instant::now();
     let mut vec_cache = VecCache::from_sorted(sorted_data1.clone())?;
     let vec_build_time = start.elapsed();
-    println!(
-        "  VecCache: {:.2} ms",
-        vec_build_time.as_secs_f64() * 1000.0
-    );
+    println!("  VecCache: {}", format_duration(vec_build_time));
 
     // Benchmark InteravlCache
     println!("Building InteravlCache...");
     let start = Instant::now();
     let mut avl_cache = InteravlCache::from_sorted(sorted_data1.clone())?;
     let avl_build_time = start.elapsed();
-    println!(
-        "  InteravlCache: {:.2} ms",
-        avl_build_time.as_secs_f64() * 1000.0
-    );
+    println!("  InteravlCache: {}", format_duration(avl_build_time));
 
     // Benchmark InteravlAltCache
     println!("Building InteravlAltCache...");
     let start = Instant::now();
     let mut avl_alt_cache = InteravlAltCache::from_sorted(sorted_data1.clone())?;
     let avl_alt_build_time = start.elapsed();
-    println!(
-        "  InteravlAltCache: {:.2} ms",
-        avl_alt_build_time.as_secs_f64() * 1000.0
-    );
+    println!("  InteravlAltCache: {}", format_duration(avl_alt_build_time));
 
     // Find fastest build
     let min_build = tree_build_time
@@ -305,37 +312,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
             tree_cache.append_sorted(sorted_data2.clone())?;
             let tree_append = start.elapsed();
-            println!(
-                "  IntervalTreeCache: {:.2} ms",
-                tree_append.as_secs_f64() * 1000.0
-            );
+            println!("  IntervalTreeCache: {}", format_duration(tree_append));
 
             // Append to VecCache
             println!("Appending to VecCache...");
             let start = Instant::now();
             vec_cache.append_sorted(sorted_data2.clone())?;
             let vec_append = start.elapsed();
-            println!("  VecCache: {:.2} ms", vec_append.as_secs_f64() * 1000.0);
+            println!("  VecCache: {}", format_duration(vec_append));
 
             // Append to InteravlCache
             println!("Appending to InteravlCache...");
             let start = Instant::now();
             avl_cache.append_sorted(sorted_data2.clone())?;
             let avl_append = start.elapsed();
-            println!(
-                "  InteravlCache: {:.2} ms",
-                avl_append.as_secs_f64() * 1000.0
-            );
+            println!("  InteravlCache: {}", format_duration(avl_append));
 
             // Append to InteravlAltCache
             println!("Appending to InteravlAltCache...");
             let start = Instant::now();
             avl_alt_cache.append_sorted(sorted_data2)?;
             let avl_alt_append = start.elapsed();
-            println!(
-                "  InteravlAltCache: {:.2} ms",
-                avl_alt_append.as_secs_f64() * 1000.0
-            );
+            println!("  InteravlAltCache: {}", format_duration(avl_alt_append));
 
             (tree_append, vec_append, avl_append, avl_alt_append)
         } else {
@@ -444,40 +442,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tree_cache.query_point(t);
     }
     let tree_point_time = start.elapsed();
-    println!(
-        "  IntervalTreeCache: {:.2} ms",
-        tree_point_time.as_secs_f64() * 1000.0
-    );
+    println!("  IntervalTreeCache: {}", format_duration(tree_point_time));
 
     let start = Instant::now();
     for &t in &test_points {
         let _ = vec_cache.query_point(t);
     }
     let vec_point_time = start.elapsed();
-    println!(
-        "  VecCache: {:.2} ms",
-        vec_point_time.as_secs_f64() * 1000.0
-    );
+    println!("  VecCache: {}", format_duration(vec_point_time));
 
     let start = Instant::now();
     for &t in &test_points {
         let _ = avl_cache.query_point(t);
     }
     let avl_point_time = start.elapsed();
-    println!(
-        "  InteravlCache: {:.2} ms",
-        avl_point_time.as_secs_f64() * 1000.0
-    );
+    println!("  InteravlCache: {}", format_duration(avl_point_time));
 
     let start = Instant::now();
     for &t in &test_points {
         let _ = avl_alt_cache.query_point(t);
     }
     let avl_alt_point_time = start.elapsed();
-    println!(
-        "  InteravlAltCache: {:.2} ms",
-        avl_alt_point_time.as_secs_f64() * 1000.0
-    );
+    println!("  InteravlAltCache: {}", format_duration(avl_alt_point_time));
 
     // Find fastest point query
     let min_point = tree_point_time
@@ -503,40 +489,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tree_cache.query_range(range.clone());
     }
     let tree_range_time = start.elapsed();
-    println!(
-        "  IntervalTreeCache: {:.2} ms",
-        tree_range_time.as_secs_f64() * 1000.0
-    );
+    println!("  IntervalTreeCache: {}", format_duration(tree_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
         let _ = vec_cache.query_range(range.clone());
     }
     let vec_range_time = start.elapsed();
-    println!(
-        "  VecCache: {:.2} ms",
-        vec_range_time.as_secs_f64() * 1000.0
-    );
+    println!("  VecCache: {}", format_duration(vec_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
         let _ = avl_cache.query_range(range.clone());
     }
     let avl_range_time = start.elapsed();
-    println!(
-        "  InteravlCache: {:.2} ms",
-        avl_range_time.as_secs_f64() * 1000.0
-    );
+    println!("  InteravlCache: {}", format_duration(avl_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
         let _ = avl_alt_cache.query_range(range.clone());
     }
     let avl_alt_range_time = start.elapsed();
-    println!(
-        "  InteravlAltCache: {:.2} ms",
-        avl_alt_range_time.as_secs_f64() * 1000.0
-    );
+    println!("  InteravlAltCache: {}", format_duration(avl_alt_range_time));
 
     // Find fastest range query
     let min_range = tree_range_time
@@ -608,26 +582,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("\nPerformance winners:");
     println!(
-        "  Build:        {} ({:.2} ms)",
+        "  Build:        {} ({})",
         fastest_build,
-        min_build.as_secs_f64() * 1000.0
+        format_duration(min_build)
     );
     if append_rows > 0 {
         println!(
-            "  Append:       {} ({:.2} ms)",
+            "  Append:       {} ({})",
             fastest_append,
-            min_append.as_secs_f64() * 1000.0
+            format_duration(min_append)
         );
     }
     println!(
-        "  Point Query:  {} ({:.2} ms)",
+        "  Point Query:  {} ({})",
         fastest_point,
-        min_point.as_secs_f64() * 1000.0
+        format_duration(min_point)
     );
     println!(
-        "  Range Query:  {} ({:.2} ms)",
+        "  Range Query:  {} ({})",
         fastest_range,
-        min_range.as_secs_f64() * 1000.0
+        format_duration(min_range)
     );
     println!(
         "  Memory:       {} ({} MB)",
