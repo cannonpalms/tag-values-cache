@@ -6,19 +6,19 @@ use std::{cmp::Ordering, fmt::Display, ops::Range};
 /// An [`Interval`] is ordered by the [`Range`] lower bound, and tie-braked with
 /// the upper bound.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub(crate) struct Interval<T>(Range<T>);
+pub struct Interval<T>(Range<T>);
 
 impl<T> Interval<T> {
-    pub(crate) fn start(&self) -> &T {
+    pub fn start(&self) -> &T {
         &self.0.start
     }
-    pub(crate) fn end(&self) -> &T {
+    pub fn end(&self) -> &T {
         &self.0.end
     }
-    pub(crate) fn as_range(&self) -> &Range<T> {
+    pub fn as_range(&self) -> &Range<T> {
         &self.0
     }
-    pub(crate) fn into_range(self) -> Range<T> {
+    pub fn into_range(self) -> Range<T> {
         self.0
     }
 }

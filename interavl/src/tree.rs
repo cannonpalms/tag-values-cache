@@ -57,6 +57,13 @@ impl<R, V> Default for IntervalTree<R, V> {
     }
 }
 
+impl<R, V> IntervalTree<R, V> {
+    /// Return a reference to the root node, if any.
+    pub fn root(&self) -> Option<&Node<R, V>> {
+        self.0.as_deref()
+    }
+}
+
 // TODO(dom): entry + entry_mut -> Vec
 
 impl<R, V> IntervalTree<R, V>

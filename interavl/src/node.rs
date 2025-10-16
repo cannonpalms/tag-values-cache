@@ -13,7 +13,7 @@ pub(super) enum RemoveResult<T> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Node<R, V> {
+pub struct Node<R, V> {
     /// Child nodes pointers.
     left: Option<Box<Node<R, V>>>,
     right: Option<Box<Node<R, V>>>,
@@ -272,23 +272,23 @@ impl<R, V> Node<R, V> {
         node.get_mut(range)
     }
 
-    pub(crate) fn value(&self) -> &V {
+    pub fn value(&self) -> &V {
         &self.value
     }
 
-    pub(crate) fn interval(&self) -> &Interval<R> {
+    pub fn interval(&self) -> &Interval<R> {
         &self.interval
     }
 
-    pub(crate) fn subtree_max(&self) -> &R {
+    pub fn subtree_max(&self) -> &R {
         &self.subtree_max
     }
 
-    pub(crate) fn height(&self) -> u8 {
+    pub fn height(&self) -> u8 {
         self.height
     }
 
-    pub(crate) fn left(&self) -> Option<&Self> {
+    pub fn left(&self) -> Option<&Self> {
         self.left.as_deref()
     }
 
@@ -301,7 +301,7 @@ impl<R, V> Node<R, V> {
         self.left.take()
     }
 
-    pub(crate) fn right(&self) -> Option<&Self> {
+    pub fn right(&self) -> Option<&Self> {
         self.right.as_deref()
     }
 

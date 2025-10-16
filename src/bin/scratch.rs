@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 
 fn main() {
     let mut tree = interavl::IntervalTree::default();
@@ -24,10 +24,9 @@ fn main() {
     tree.insert(12..18, 4);
     print_tree(&tree);
 
-    // Note: Cannot implement DOT format printing because:
-    // - interavl::node::Node is not part of the public API
-    // - IntervalTree doesn't expose a method to access the root or internal structure
-    // - The test_utils::print_dot function only works within the interavl crate's tests
+    // Print DOT format
+    println!("\n=== DOT FORMAT ===");
+    println!("{}", print_dot(&tree));
 }
 
 fn print_tree<R, V>(tree: &interavl::IntervalTree<R, V>)
@@ -42,4 +41,15 @@ where
     }
     println!("\nTree: {tree:#?}");
     println!("===================\n");
+}
+
+fn print_dot<R, V>(tree: &interavl::IntervalTree<R, V>) -> String
+where
+    V: Display,
+    R: Display + Ord,
+{
+    match tree.root() {
+        Some(root) => interavl::util::dot::print_dot(root),
+        None => "digraph {\n}\n".to_string(),
+    }
 }

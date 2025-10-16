@@ -35,7 +35,10 @@ mod interval;
 mod iter;
 mod node;
 mod tree;
+pub mod util;
 
+pub use interval::Interval;
+pub use node::Node;
 pub use tree::*;
 
 #[cfg(test)]
