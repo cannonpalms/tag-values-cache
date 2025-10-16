@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    InteravlCache, IntervalCache, IntervalTreeCache, RecordBatchRow, SortedData, VecCache,
-    extract_rows_from_batch,
+    InteravlAltCache, InteravlCache, IntervalCache, IntervalTreeCache, RecordBatchRow, SortedData,
+    VecCache, extract_rows_from_batch,
 };
 
 fn print_usage() {
@@ -246,12 +246,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         avl_build_time.as_secs_f64() * 1000.0
     );
 
+    // Benchmark InteravlAltCache
+    println!("Building InteravlAltCache...");
+    let start = Instant::now();
+    let mut avl_alt_cache = InteravlAltCache::from_sorted(sorted_data1.clone())?;
+    let avl_alt_build_time = start.elapsed();
+    println!(
+        "  InteravlAltCache: {:.2} ms",
+        avl_alt_build_time.as_secs_f64() * 1000.0
+    );
+
     // Find fastest build
-    let min_build = tree_build_time.min(vec_build_time).min(avl_build_time);
+    let min_build = tree_build_time
+        .min(vec_build_time)
+        .min(avl_build_time)
+        .min(avl_alt_build_time);
     let fastest_build = if min_build == vec_build_time {
         "VecCache"
     } else if min_build == tree_build_time {
         "IntervalTreeCache"
+    } else if min_build == avl_alt_build_time {
+        "InteravlAltCache"
     } else {
         "InteravlCache"
     };
@@ -271,12 +286,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec_cache.interval_count()
     );
     println!(
-        "  InteravlCache:     {} intervals\n",
+        "  InteravlCache:     {} intervals",
         avl_cache.interval_count()
+    );
+    println!(
+        "  InteravlAltCache:  {} intervals\n",
+        avl_alt_cache.interval_count()
     );
 
     // Benchmark append performance (if configured)
-    let (tree_append_time, vec_append_time, avl_append_time) =
+    let (tree_append_time, vec_append_time, avl_append_time, avl_alt_append_time) =
         if let Some(sorted_data2) = sorted_data2 {
             println!("=== Append Performance ===");
             println!("Appending {} rows...\n", second_half.len());
@@ -301,17 +320,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Append to InteravlCache
             println!("Appending to InteravlCache...");
             let start = Instant::now();
-            avl_cache.append_sorted(sorted_data2)?;
+            avl_cache.append_sorted(sorted_data2.clone())?;
             let avl_append = start.elapsed();
             println!(
                 "  InteravlCache: {:.2} ms",
                 avl_append.as_secs_f64() * 1000.0
             );
 
-            (tree_append, vec_append, avl_append)
+            // Append to InteravlAltCache
+            println!("Appending to InteravlAltCache...");
+            let start = Instant::now();
+            avl_alt_cache.append_sorted(sorted_data2)?;
+            let avl_alt_append = start.elapsed();
+            println!(
+                "  InteravlAltCache: {:.2} ms",
+                avl_alt_append.as_secs_f64() * 1000.0
+            );
+
+            (tree_append, vec_append, avl_append, avl_alt_append)
         } else {
             // No append phase
             (
+                Duration::from_secs(0),
                 Duration::from_secs(0),
                 Duration::from_secs(0),
                 Duration::from_secs(0),
@@ -320,11 +350,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Find fastest append (if append was performed)
     let (min_append, fastest_append) = if append_rows > 0 {
-        let min_time = tree_append_time.min(vec_append_time).min(avl_append_time);
+        let min_time = tree_append_time
+            .min(vec_append_time)
+            .min(avl_append_time)
+            .min(avl_alt_append_time);
         let fastest = if min_time == vec_append_time {
             "VecCache"
         } else if min_time == tree_append_time {
             "IntervalTreeCache"
+        } else if min_time == avl_alt_append_time {
+            "InteravlAltCache"
         } else {
             "InteravlCache"
         };
@@ -357,17 +392,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  InteravlCache:     {} intervals",
         avl_cache.interval_count()
     );
+    println!(
+        "  InteravlAltCache:  {} intervals",
+        avl_alt_cache.interval_count()
+    );
 
     // Calculate compression ratio
     let total_points = first_half.len() + second_half.len();
     let tree_compression = (total_points as f64) / (tree_cache.interval_count() as f64);
     let vec_compression = (total_points as f64) / (vec_cache.interval_count() as f64);
     let avl_compression = (total_points as f64) / (avl_cache.interval_count() as f64);
+    let avl_alt_compression = (total_points as f64) / (avl_alt_cache.interval_count() as f64);
 
     println!("\nCompression ratio (data points / intervals):");
     println!("  IntervalTreeCache: {:.2}x", tree_compression);
     println!("  VecCache:          {:.2}x", vec_compression);
-    println!("  InteravlCache:     {:.2}x\n", avl_compression);
+    println!("  InteravlCache:     {:.2}x", avl_compression);
+    println!("  InteravlAltCache:  {:.2}x\n", avl_alt_compression);
 
     // Generate query test points
     println!("=== Query Performance ===");
@@ -428,12 +469,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         avl_point_time.as_secs_f64() * 1000.0
     );
 
+    let start = Instant::now();
+    for &t in &test_points {
+        let _ = avl_alt_cache.query_point(t);
+    }
+    let avl_alt_point_time = start.elapsed();
+    println!(
+        "  InteravlAltCache: {:.2} ms",
+        avl_alt_point_time.as_secs_f64() * 1000.0
+    );
+
     // Find fastest point query
-    let min_point = tree_point_time.min(vec_point_time).min(avl_point_time);
+    let min_point = tree_point_time
+        .min(vec_point_time)
+        .min(avl_point_time)
+        .min(avl_alt_point_time);
     let fastest_point = if min_point == vec_point_time {
         "VecCache"
     } else if min_point == tree_point_time {
         "IntervalTreeCache"
+    } else if min_point == avl_alt_point_time {
+        "InteravlAltCache"
     } else {
         "InteravlCache"
     };
@@ -472,12 +528,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         avl_range_time.as_secs_f64() * 1000.0
     );
 
+    let start = Instant::now();
+    for range in &test_ranges {
+        let _ = avl_alt_cache.query_range(range.clone());
+    }
+    let avl_alt_range_time = start.elapsed();
+    println!(
+        "  InteravlAltCache: {:.2} ms",
+        avl_alt_range_time.as_secs_f64() * 1000.0
+    );
+
     // Find fastest range query
-    let min_range = tree_range_time.min(vec_range_time).min(avl_range_time);
+    let min_range = tree_range_time
+        .min(vec_range_time)
+        .min(avl_range_time)
+        .min(avl_alt_range_time);
     let fastest_range = if min_range == vec_range_time {
         "VecCache"
     } else if min_range == tree_range_time {
         "IntervalTreeCache"
+    } else if min_range == avl_alt_range_time {
+        "InteravlAltCache"
     } else {
         "InteravlCache"
     };
@@ -491,6 +562,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tree_memory = tree_cache.size_bytes();
     let vec_memory = vec_cache.size_bytes();
     let avl_memory = avl_cache.size_bytes();
+    let avl_alt_memory = avl_alt_cache.size_bytes();
 
     println!(
         "  IntervalTreeCache: {} MB ({} bytes)",
@@ -507,12 +579,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         avl_memory / 1_000_000,
         avl_memory
     );
+    println!(
+        "  InteravlAltCache:  {} MB ({} bytes)",
+        avl_alt_memory / 1_000_000,
+        avl_alt_memory
+    );
 
-    let min_memory = tree_memory.min(vec_memory).min(avl_memory);
+    let min_memory = tree_memory
+        .min(vec_memory)
+        .min(avl_memory)
+        .min(avl_alt_memory);
     let lowest_memory = if min_memory == vec_memory {
         "VecCache"
     } else if min_memory == tree_memory {
         "IntervalTreeCache"
+    } else if min_memory == avl_alt_memory {
+        "InteravlAltCache"
     } else {
         "InteravlCache"
     };
