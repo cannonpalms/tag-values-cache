@@ -1,4 +1,4 @@
-//! IntervalCache implementation using the interavl crate (AVL-based interval tree).
+//! `IntervalCache` implementation using the interavl crate (AVL-based interval tree).
 //!
 //! This implementation uses an AVL tree-based interval tree, which provides
 //! guaranteed O(log n) operations and automatic balancing.

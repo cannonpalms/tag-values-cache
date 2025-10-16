@@ -28,7 +28,6 @@ use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::array::{RecordBatch, as_dictionary_array, as_primitive_array, as_string_array};
 use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
 
-pub mod compare;
 pub mod interavl_alt_cache;
 pub mod interavl_cache;
 pub mod interval_tree;
@@ -50,7 +49,7 @@ pub type Timestamp = u64;
 pub trait HeapSize {
     /// Returns the estimated number of bytes allocated on the heap by this value.
     ///
-    /// This should NOT include the size of the value itself (size_of::<Self>()),
+    /// This should NOT include the size of the value itself (`size_of::`<Self>()),
     /// only the additional heap-allocated memory it owns.
     fn heap_size(&self) -> usize;
 }
@@ -154,7 +153,7 @@ impl HeapSize for bool {
 /// Errors that can occur when building an interval cache
 #[derive(thiserror::Error, Debug)]
 pub enum CacheBuildError {
-    /// Occurs when trying to create an interval [t, t+1) where t == u64::MAX
+    /// Occurs when trying to create an interval [t, t+1) where t == `u64::MAX`
     #[error("cannot create interval [t, t+1) because t == u64::MAX")]
     TimestampOverflow(u64),
 }
@@ -170,6 +169,7 @@ pub struct SortedData<V> {
 
 impl<V> SortedData<V> {
     /// Consume the wrapper and return the inner sorted data
+    #[must_use]
     pub fn into_inner(self) -> Vec<(Timestamp, V)> {
         self.points
     }
@@ -179,20 +179,22 @@ impl<V> SortedData<V>
 where
     V: Clone + Ord,
 {
-    /// Create a new SortedData from unsorted input.
+    /// Create a new `SortedData` from unsorted input.
     /// This will sort the data by timestamp, then by value.
+    #[must_use]
     pub fn from_unsorted(mut points: Vec<(Timestamp, V)>) -> Self {
         points.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         Self { points }
     }
 
-    /// Create SortedData from pre-sorted input.
+    /// Create `SortedData` from pre-sorted input.
     ///
     /// # Safety
     /// The caller must guarantee that `points` is sorted by timestamp
     /// first, then by value in ascending order.
     ///
     /// In debug builds, this will verify the sorting assumption.
+    #[must_use]
     pub fn from_sorted(points: Vec<(Timestamp, V)>) -> Self {
         #[cfg(debug_assertions)]
         {
@@ -331,11 +333,12 @@ where
     V: Clone + Eq + std::hash::Hash,
 {
     /// Create a new builder with the given data
+    #[must_use]
     pub fn new(data: Vec<(Timestamp, V)>) -> Self {
         Self { data }
     }
 
-    /// Build an IntervalTreeCache from the data
+    /// Build an `IntervalTreeCache` from the data
     pub fn build_interval_tree(self) -> Result<IntervalTreeCache<V>, CacheBuildError>
     where
         V: Ord,
@@ -343,7 +346,7 @@ where
         IntervalTreeCache::new(self.data)
     }
 
-    /// Build a VecCache from the data
+    /// Build a `VecCache` from the data
     pub fn build_vec_cache(self) -> Result<VecCache<V>, CacheBuildError>
     where
         V: Ord,
@@ -351,7 +354,7 @@ where
         VecCache::new(self.data)
     }
 
-    /// Build an InteravlCache (AVL-based) from the data
+    /// Build an `InteravlCache` (AVL-based) from the data
     pub fn build_interavl_cache(self) -> Result<InteravlCache<V>, CacheBuildError>
     where
         V: Ord,
@@ -385,20 +388,20 @@ impl fmt::Display for ArrowValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ArrowValue::Null => write!(f, "null"),
-            ArrowValue::Boolean(v) => write!(f, "{}", v),
-            ArrowValue::Int8(v) => write!(f, "{}", v),
-            ArrowValue::Int16(v) => write!(f, "{}", v),
-            ArrowValue::Int32(v) => write!(f, "{}", v),
-            ArrowValue::Int64(v) => write!(f, "{}", v),
-            ArrowValue::UInt8(v) => write!(f, "{}", v),
-            ArrowValue::UInt16(v) => write!(f, "{}", v),
-            ArrowValue::UInt32(v) => write!(f, "{}", v),
-            ArrowValue::UInt64(v) => write!(f, "{}", v),
-            ArrowValue::Float32(v) => write!(f, "{}", v),
-            ArrowValue::Float64(v) => write!(f, "{}", v),
-            ArrowValue::String(v) => write!(f, "{}", v),
-            ArrowValue::Binary(v) => write!(f, "{:?}", v),
-            ArrowValue::Unsupported(v) => write!(f, "{}", v),
+            ArrowValue::Boolean(v) => write!(f, "{v}"),
+            ArrowValue::Int8(v) => write!(f, "{v}"),
+            ArrowValue::Int16(v) => write!(f, "{v}"),
+            ArrowValue::Int32(v) => write!(f, "{v}"),
+            ArrowValue::Int64(v) => write!(f, "{v}"),
+            ArrowValue::UInt8(v) => write!(f, "{v}"),
+            ArrowValue::UInt16(v) => write!(f, "{v}"),
+            ArrowValue::UInt32(v) => write!(f, "{v}"),
+            ArrowValue::UInt64(v) => write!(f, "{v}"),
+            ArrowValue::Float32(v) => write!(f, "{v}"),
+            ArrowValue::Float64(v) => write!(f, "{v}"),
+            ArrowValue::String(v) => write!(f, "{v}"),
+            ArrowValue::Binary(v) => write!(f, "{v:?}"),
+            ArrowValue::Unsupported(v) => write!(f, "{v}"),
         }
     }
 }
@@ -494,26 +497,14 @@ impl PartialOrd for ArrowValue {
 impl HeapSize for ArrowValue {
     fn heap_size(&self) -> usize {
         match self {
-            ArrowValue::Null => 0,
-            ArrowValue::Boolean(_) => 0,
-            ArrowValue::Int8(_) => 0,
-            ArrowValue::Int16(_) => 0,
-            ArrowValue::Int32(_) => 0,
-            ArrowValue::Int64(_) => 0,
-            ArrowValue::UInt8(_) => 0,
-            ArrowValue::UInt16(_) => 0,
-            ArrowValue::UInt32(_) => 0,
-            ArrowValue::UInt64(_) => 0,
-            ArrowValue::Float32(_) => 0,
-            ArrowValue::Float64(_) => 0,
-            ArrowValue::String(s) => s.heap_size(),
+            ArrowValue::String(s) | ArrowValue::Unsupported(s) => s.heap_size(),
             ArrowValue::Binary(v) => v.heap_size(),
-            ArrowValue::Unsupported(s) => s.heap_size(),
+            _ => 0,
         }
     }
 }
 
-/// A row of data from a RecordBatch, excluding the time column.
+/// A row of data from a `RecordBatch`, excluding the time column.
 /// This represents all column values for a specific timestamp.
 #[derive(Clone, Debug)]
 pub struct RecordBatchRow {
@@ -522,7 +513,8 @@ pub struct RecordBatchRow {
 }
 
 impl RecordBatchRow {
-    /// Create a new RecordBatchRow from column values
+    /// Create a new `RecordBatchRow` from column values
+    #[must_use]
     pub fn new(values: BTreeMap<String, ArrowValue>) -> Self {
         Self { values }
     }
@@ -533,7 +525,7 @@ impl fmt::Display for RecordBatchRow {
         let parts: Vec<String> = self
             .values
             .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format!("{k}={v}"))
             .collect();
         write!(f, "{}", parts.join(","))
     }
@@ -575,15 +567,16 @@ impl HeapSize for RecordBatchRow {
     }
 }
 
-/// Extract timestamp and row data from a RecordBatch.
+/// Extract timestamp and row data from a `RecordBatch`.
 ///
-/// This function processes a RecordBatch and extracts timestamp-value pairs
+/// This function processes a `RecordBatch` and extracts timestamp-value pairs
 /// where the value contains all non-time columns for that row.
 ///
 /// # Returns
-/// A vector of (timestamp, RecordBatchRow) pairs where RecordBatchRow
+/// A vector of (timestamp, `RecordBatchRow`) pairs where `RecordBatchRow`
 /// contains all column data except the timestamp.
-pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatchRow)> {
+#[must_use]
+pub fn extract_rows_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, RecordBatchRow)> {
     let schema = batch.schema_ref();
 
     // Find the timestamp column
@@ -628,7 +621,7 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
             .iter()
             .map(|v| *v as u64)
             .collect(),
-        dt => panic!("Unexpected data type for timestamp column: {:?}", dt),
+        dt => panic!("Unexpected data type for timestamp column: {dt:?}"),
     };
 
     // Build results
@@ -642,76 +635,86 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
             let array = batch.column(col_idx);
 
             // Extract typed value for this row
-            let value = if !array.is_valid(row_idx) {
-                ArrowValue::Null
-            } else {
+            let value = if array.is_valid(row_idx) {
                 match array.data_type() {
                     DataType::Null => ArrowValue::Null,
                     DataType::Boolean => array
                         .as_any()
                         .downcast_ref::<BooleanArray>()
-                        .map(|arr| ArrowValue::Boolean(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("bool_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("bool_error".to_string()), |arr| {
+                            ArrowValue::Boolean(arr.value(row_idx))
+                        }),
                     DataType::Int8 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Int8Array>()
-                        .map(|arr| ArrowValue::Int8(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("int8_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("int8_error".to_string()), |arr| {
+                            ArrowValue::Int8(arr.value(row_idx))
+                        }),
                     DataType::Int16 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Int16Array>()
-                        .map(|arr| ArrowValue::Int16(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("int16_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("int16_error".to_string()), |arr| {
+                            ArrowValue::Int16(arr.value(row_idx))
+                        }),
                     DataType::Int32 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Int32Array>()
-                        .map(|arr| ArrowValue::Int32(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("int32_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("int32_error".to_string()), |arr| {
+                            ArrowValue::Int32(arr.value(row_idx))
+                        }),
                     DataType::Int64 => array
                         .as_any()
                         .downcast_ref::<Int64Array>()
-                        .map(|arr| ArrowValue::Int64(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("int64_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("int64_error".to_string()), |arr| {
+                            ArrowValue::Int64(arr.value(row_idx))
+                        }),
                     DataType::UInt8 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt8Array>()
-                        .map(|arr| ArrowValue::UInt8(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("uint8_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("uint8_error".to_string()), |arr| {
+                            ArrowValue::UInt8(arr.value(row_idx))
+                        }),
                     DataType::UInt16 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt16Array>()
-                        .map(|arr| ArrowValue::UInt16(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("uint16_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("uint16_error".to_string()), |arr| {
+                            ArrowValue::UInt16(arr.value(row_idx))
+                        }),
                     DataType::UInt32 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt32Array>()
-                        .map(|arr| ArrowValue::UInt32(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("uint32_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("uint32_error".to_string()), |arr| {
+                            ArrowValue::UInt32(arr.value(row_idx))
+                        }),
                     DataType::UInt64 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt64Array>()
-                        .map(|arr| ArrowValue::UInt64(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("uint64_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("uint64_error".to_string()), |arr| {
+                            ArrowValue::UInt64(arr.value(row_idx))
+                        }),
                     DataType::Float32 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Float32Array>()
-                        .map(|arr| ArrowValue::Float32(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("float32_error".to_string())),
-                    DataType::Float64 => array
-                        .as_any()
-                        .downcast_ref::<Float64Array>()
-                        .map(|arr| ArrowValue::Float64(arr.value(row_idx)))
-                        .unwrap_or(ArrowValue::Unsupported("float64_error".to_string())),
+                        .map_or(
+                            ArrowValue::Unsupported("float32_error".to_string()),
+                            |arr| ArrowValue::Float32(arr.value(row_idx)),
+                        ),
+                    DataType::Float64 => array.as_any().downcast_ref::<Float64Array>().map_or(
+                        ArrowValue::Unsupported("float64_error".to_string()),
+                        |arr| ArrowValue::Float64(arr.value(row_idx)),
+                    ),
                     DataType::Utf8 => array
                         .as_any()
                         .downcast_ref::<StringArray>()
-                        .map(|arr| ArrowValue::String(arr.value(row_idx).to_string()))
-                        .unwrap_or(ArrowValue::Unsupported("string_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("string_error".to_string()), |arr| {
+                            ArrowValue::String(arr.value(row_idx).to_string())
+                        }),
                     DataType::Binary => array
                         .as_any()
                         .downcast_ref::<arrow::array::BinaryArray>()
-                        .map(|arr| ArrowValue::Binary(arr.value(row_idx).to_vec()))
-                        .unwrap_or(ArrowValue::Unsupported("binary_error".to_string())),
+                        .map_or(ArrowValue::Unsupported("binary_error".to_string()), |arr| {
+                            ArrowValue::Binary(arr.value(row_idx).to_vec())
+                        }),
                     DataType::Dictionary(_, _) => {
                         // Handle dictionary encoded columns (like tags)
                         let dict_array = as_dictionary_array::<Int32Type>(array);
@@ -724,9 +727,11 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
                     }
                     dt => {
                         // For unsupported types, store the type name
-                        ArrowValue::Unsupported(format!("{:?}", dt))
+                        ArrowValue::Unsupported(format!("{dt:?}"))
                     }
                 }
+            } else {
+                ArrowValue::Null
             };
 
             row_values.insert(col_name.to_string(), value);
@@ -739,9 +744,9 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
     results
 }
 
-/// Process multiple RecordBatches into sorted data with RecordBatchRow values.
+/// Process multiple `RecordBatches` into sorted data with `RecordBatchRow` values.
 ///
-/// This function processes all batches and returns them as SortedData
+/// This function processes all batches and returns them as `SortedData`
 /// ready for cache construction with full column data preserved.
 pub fn record_batches_to_row_data(
     batches: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
@@ -750,23 +755,24 @@ pub fn record_batches_to_row_data(
 
     for batch in batches {
         let batch = batch?;
-        let points = extract_rows_from_batch(batch);
+        let points = extract_rows_from_batch(&batch);
         all_points.extend(points);
     }
 
     Ok(SortedData::from_unsorted(all_points))
 }
 
-/// Extract timestamp and tag data from a RecordBatch.
+/// Extract timestamp and tag data from a `RecordBatch`.
 ///
-/// This function processes a RecordBatch from a parquet file and extracts
+/// This function processes a `RecordBatch` from a parquet file and extracts
 /// timestamp-value pairs where the value is a serialized representation
 /// of all tag columns for that row.
 ///
 /// # Returns
-/// A vector of (timestamp, tag_string) pairs where tag_string contains
+/// A vector of (timestamp, `tag_string`) pairs where `tag_string` contains
 /// all tags concatenated with their values.
-pub fn extract_time_series_from_batch(batch: RecordBatch) -> Vec<(Timestamp, String)> {
+#[must_use]
+pub fn extract_time_series_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, String)> {
     let schema = batch.schema_ref();
 
     // Find the timestamp column
@@ -838,7 +844,7 @@ pub fn extract_time_series_from_batch(batch: RecordBatch) -> Vec<(Timestamp, Str
                 && let Some(val) = vals.get(idx)
                 && !val.is_empty()
             {
-                tag_string_parts.push(format!("{}={}", name, val));
+                tag_string_parts.push(format!("{name}={val}"));
             }
         }
 
@@ -850,10 +856,10 @@ pub fn extract_time_series_from_batch(batch: RecordBatch) -> Vec<(Timestamp, Str
     results
 }
 
-/// Process multiple RecordBatches from a parquet reader into sorted data.
+/// Process multiple `RecordBatches` from a parquet reader into sorted data.
 ///
 /// This is a convenience function that processes all batches from a reader
-/// and returns them as SortedData ready for cache construction.
+/// and returns them as `SortedData` ready for cache construction.
 pub fn record_batches_to_sorted_data(
     batches: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
 ) -> Result<SortedData<String>, Box<dyn std::error::Error>> {
@@ -861,7 +867,7 @@ pub fn record_batches_to_sorted_data(
 
     for batch in batches {
         let batch = batch?;
-        let points = extract_time_series_from_batch(batch);
+        let points = extract_time_series_from_batch(&batch);
         all_points.extend(points);
     }
 

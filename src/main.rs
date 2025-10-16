@@ -37,7 +37,7 @@ fn format_duration(duration: Duration) -> String {
 
     if nanos < 1_000 {
         // Less than 1 microsecond - show in nanoseconds
-        format!("{} ns", nanos)
+        format!("{nanos} ns")
     } else if nanos < 1_000_000 {
         // Less than 1 millisecond - show in microseconds
         format!("{:.2} µs", nanos as f64 / 1_000.0)
@@ -60,7 +60,7 @@ fn format_bytes(bytes: usize) -> String {
 
     if bytes < 1024 {
         // Less than 1 KiB - show in bytes
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes_f64 < MIB {
         // Less than 1 MiB - show in KiB
         format!("{:.2} KiB", bytes_f64 / KIB)
@@ -113,16 +113,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("=== Tag Values Cache Benchmark ===\n");
     println!("Configuration:");
-    println!("  Path: {}", parquet_path);
+    println!("  Path: {parquet_path}");
     if let Some(initial) = initial_rows {
-        println!("  Initial rows: {}", initial);
-        println!("  Append rows: {}", append_rows);
+        println!("  Initial rows: {initial}");
+        println!("  Append rows: {append_rows}");
         println!("  Total rows: {}", initial + append_rows);
     } else {
-        println!(
-            "  Initial rows: all available (up to {} max)",
-            DEFAULT_MAX_ROWS
-        );
+        println!("  Initial rows: all available (up to {DEFAULT_MAX_ROWS} max)");
         println!("  Append rows: 0");
     }
     println!();
@@ -131,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parquet_files = get_parquet_files(parquet_path)?;
 
     if parquet_files.is_empty() {
-        return Err(format!("No parquet files found at: {}", parquet_path).into());
+        return Err(format!("No parquet files found at: {parquet_path}").into());
     }
 
     println!("Found {} parquet file(s) to process", parquet_files.len());
@@ -144,11 +141,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for file_path in &parquet_files {
         // Check if we've reached our limit (if one was specified)
         if let Some(limit) = total_rows
-            && all_data.len() >= limit {
-                break;
-            }
+            && all_data.len() >= limit
+        {
+            break;
+        }
 
-        println!("\nLoading parquet file: {}", file_path);
+        println!("\nLoading parquet file: {file_path}");
 
         // Open the parquet file
         let file = File::open(file_path)?;
@@ -157,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Get metadata about the file
         let metadata = builder.metadata();
         let file_rows = metadata.file_metadata().num_rows();
-        println!("  Rows in file: {}", file_rows);
+        println!("  Rows in file: {file_rows}");
 
         // Build the reader
         let reader = builder.build()?;
@@ -166,9 +164,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for batch_result in reader {
             // Check if we've reached our limit (if one was specified)
             if let Some(limit) = total_rows
-                && all_data.len() >= limit {
-                    break;
-                }
+                && all_data.len() >= limit
+            {
+                break;
+            }
 
             let batch = batch_result?;
             total_batch_count += 1;
@@ -181,15 +180,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            let rows = extract_rows_from_batch(batch);
+            let rows = extract_rows_from_batch(&batch);
             all_data.extend(rows);
 
             // Trim to exactly total_rows if we went over
             if let Some(limit) = total_rows
-                && all_data.len() > limit {
-                    all_data.truncate(limit);
-                    break;
-                }
+                && all_data.len() > limit
+            {
+                all_data.truncate(limit);
+                break;
+            }
         }
     }
 
@@ -281,7 +281,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut avl_alt_cache = InteravlAltCache::from_sorted(sorted_data1.clone())?;
     let avl_alt_build_time = start.elapsed();
-    println!("  InteravlAltCache: {}", format_duration(avl_alt_build_time));
+    println!(
+        "  InteravlAltCache: {}",
+        format_duration(avl_alt_build_time)
+    );
 
     // Find fastest build
     let min_build = tree_build_time
@@ -297,7 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "InteravlCache"
     };
-    println!("\nFastest build: {}\n", fastest_build);
+    println!("\nFastest build: {fastest_build}\n");
 
     // Report number of intervals after initial build
     println!(
@@ -381,7 +384,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "InteravlCache"
         };
-        println!("\nFastest append: {}\n", fastest);
+        println!("\nFastest append: {fastest}\n");
         (min_time, fastest)
     } else {
         (Duration::from_secs(0), "N/A")
@@ -423,10 +426,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let avl_alt_compression = (total_points as f64) / (avl_alt_cache.interval_count() as f64);
 
     println!("\nCompression ratio (data points / intervals):");
-    println!("  IntervalTreeCache: {:.2}x", tree_compression);
-    println!("  VecCache:          {:.2}x", vec_compression);
-    println!("  InteravlCache:     {:.2}x", avl_compression);
-    println!("  InteravlAltCache:  {:.2}x\n", avl_alt_compression);
+    println!("  IntervalTreeCache: {tree_compression:.2}x");
+    println!("  VecCache:          {vec_compression:.2}x");
+    println!("  InteravlCache:     {avl_compression:.2}x");
+    println!("  InteravlAltCache:  {avl_alt_compression:.2}x\n");
 
     // Generate query test points
     println!("=== Query Performance ===");
@@ -437,8 +440,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let step = all_data.len() / sample_size;
     let test_points: Vec<u64> = (0..sample_size).map(|i| all_data[i * step].0).collect();
 
-    let min_ts = all_data.first().map(|p| p.0).unwrap_or(0);
-    let max_ts = all_data.last().map(|p| p.0).unwrap_or(1000000);
+    let min_ts = all_data.first().map_or(0, |p| p.0);
+    let max_ts = all_data.last().map_or(1000000, |p| p.0);
     let range_size = (max_ts - min_ts) / 100; // 100 test ranges
     let test_ranges: Vec<std::ops::Range<u64>> = (0..100)
         .map(|i| {
@@ -483,7 +486,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = avl_alt_cache.query_point(t);
     }
     let avl_alt_point_time = start.elapsed();
-    println!("  InteravlAltCache: {}", format_duration(avl_alt_point_time));
+    println!(
+        "  InteravlAltCache: {}",
+        format_duration(avl_alt_point_time)
+    );
 
     // Find fastest point query
     let min_point = tree_point_time
@@ -499,7 +505,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "InteravlCache"
     };
-    println!("\n  Fastest: {}", fastest_point);
+    println!("\n  Fastest: {fastest_point}");
 
     // Benchmark range queries
     println!("\nRange queries ({} queries):", test_ranges.len());
@@ -530,7 +536,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = avl_alt_cache.query_range(range.clone());
     }
     let avl_alt_range_time = start.elapsed();
-    println!("  InteravlAltCache: {}", format_duration(avl_alt_range_time));
+    println!(
+        "  InteravlAltCache: {}",
+        format_duration(avl_alt_range_time)
+    );
 
     // Find fastest range query
     let min_range = tree_range_time
@@ -546,7 +555,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "InteravlCache"
     };
-    println!("\n  Fastest: {}", fastest_range);
+    println!("\n  Fastest: {fastest_range}");
 
     // Measure memory usage
     println!("\n=== Memory Usage ===");
@@ -592,7 +601,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         "InteravlCache"
     };
-    println!("\nLowest memory usage: {}\n", lowest_memory);
+    println!("\nLowest memory usage: {lowest_memory}\n");
 
     // Summary
     println!("\n=== Summary ===");

@@ -1,4 +1,4 @@
-//! IntervalTree-based implementation of the IntervalCache trait.
+//! IntervalTree-based implementation of the `IntervalCache` trait.
 //!
 //! This implementation uses an interval tree data structure to efficiently
 //! store and query time intervals. It merges consecutive timestamps with
@@ -66,12 +66,12 @@ where
         let mut all_intervals = Vec::new();
 
         // Collect existing intervals
-        for entry in self.tree.iter() {
+        for entry in &self.tree {
             all_intervals.push((entry.range.clone(), entry.value.clone()));
         }
 
         // Collect new intervals
-        for entry in new_tree.iter() {
+        for entry in &new_tree {
             all_intervals.push((entry.range.clone(), entry.value.clone()));
         }
 
@@ -93,7 +93,7 @@ where
         let mut interval_count = 0;
         let mut total_value_size = 0;
 
-        for entry in self.tree.iter() {
+        for entry in &self.tree {
             interval_count += 1;
             // Each interval entry contains:
             // - Range<u64>: 16 bytes (2 u64s)
@@ -178,7 +178,7 @@ where
         let mut open: HashMap<V, (u64, u64)> = HashMap::new();
         let mut runs: Vec<(Range<u64>, V)> = Vec::new();
 
-        for (t, v) in points.into_iter() {
+        for (t, v) in points {
             // Check for overflow when creating interval [t, t+1)
             let end = t
                 .checked_add(1)
@@ -205,7 +205,7 @@ where
         }
 
         // Flush all remaining open runs
-        for (v, (start, end)) in open.into_iter() {
+        for (v, (start, end)) in open {
             runs.push((start..end, v));
         }
 
