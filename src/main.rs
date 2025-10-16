@@ -50,6 +50,29 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// Format bytes in the most appropriate unit (B, KiB, MiB, or GiB) with limited decimal places
+fn format_bytes(bytes: usize) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let bytes_f64 = bytes as f64;
+
+    if bytes < 1024 {
+        // Less than 1 KiB - show in bytes
+        format!("{} B", bytes)
+    } else if bytes_f64 < MIB {
+        // Less than 1 MiB - show in KiB
+        format!("{:.2} KiB", bytes_f64 / KIB)
+    } else if bytes_f64 < GIB {
+        // Less than 1 GiB - show in MiB
+        format!("{:.2} MiB", bytes_f64 / MIB)
+    } else {
+        // 1 GiB or more - show in GiB
+        format!("{:.2} GiB", bytes_f64 / GIB)
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
@@ -539,23 +562,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let avl_alt_memory = avl_alt_cache.size_bytes();
 
     println!(
-        "  IntervalTreeCache: {} MB ({} bytes)",
-        tree_memory / 1_000_000,
+        "  IntervalTreeCache: {} ({} bytes)",
+        format_bytes(tree_memory),
         tree_memory
     );
     println!(
-        "  VecCache:          {} MB ({} bytes)",
-        vec_memory / 1_000_000,
+        "  VecCache:          {} ({} bytes)",
+        format_bytes(vec_memory),
         vec_memory
     );
     println!(
-        "  InteravlCache:     {} MB ({} bytes)",
-        avl_memory / 1_000_000,
+        "  InteravlCache:     {} ({} bytes)",
+        format_bytes(avl_memory),
         avl_memory
     );
     println!(
-        "  InteravlAltCache:  {} MB ({} bytes)",
-        avl_alt_memory / 1_000_000,
+        "  InteravlAltCache:  {} ({} bytes)",
+        format_bytes(avl_alt_memory),
         avl_alt_memory
     );
 
@@ -604,9 +627,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_duration(min_range)
     );
     println!(
-        "  Memory:       {} ({} MB)",
+        "  Memory:       {} ({})",
         lowest_memory,
-        min_memory / 1_000_000
+        format_bytes(min_memory)
     );
 
     Ok(())
