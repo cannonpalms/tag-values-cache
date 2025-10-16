@@ -12,4 +12,5 @@ arrow = { version = "55.2" }
 interavl = { path = "./interavl" }
 intervaltree = "0.2.7"
 parquet = { version = "55.2", features = ["arrow"] }
+rust-lapper = "1.2.0"
 thiserror = "2.0.17"

@@ -31,12 +31,14 @@ use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
 pub mod interavl_alt_cache;
 pub mod interavl_cache;
 pub mod interval_tree;
+pub mod lapper_cache;
 pub mod vec_cache;
 
 // Re-export the implementations for convenience
 pub use interavl_alt_cache::InteravlAltCache;
 pub use interavl_cache::InteravlCache;
 pub use interval_tree::IntervalTreeCache;
+pub use lapper_cache::LapperCache;
 pub use vec_cache::VecCache;
 
 /// The type used for timestamps (nanoseconds since epoch)
@@ -360,6 +362,14 @@ where
         V: Ord,
     {
         InteravlCache::new(self.data)
+    }
+
+    /// Build a `LapperCache` from the data
+    pub fn build_lapper_cache(self) -> Result<LapperCache<V>, CacheBuildError>
+    where
+        V: Ord,
+    {
+        LapperCache::new(self.data)
     }
 }
 
