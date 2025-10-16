@@ -142,8 +142,8 @@ where
         // Merge any intervals that touch or overlap with same value
         let intervals: Vec<(Range<u64>, V)> = starts
             .into_iter()
-            .zip(ends.into_iter())
-            .zip(values.into_iter())
+            .zip(ends)
+            .zip(values)
             .map(|((start, end), value)| (start..end, value))
             .collect();
 
@@ -210,11 +210,10 @@ where
         // Linear scan from the beginning up to first_after
         // This is actually optimal given our data structure constraints
         for i in 0..first_after {
-            if self.ends[i] > range.start {
-                if seen.insert(&self.values[i]) {
+            if self.ends[i] > range.start
+                && seen.insert(&self.values[i]) {
                     results.push(&self.values[i]);
                 }
-            }
         }
 
         results

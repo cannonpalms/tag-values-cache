@@ -143,11 +143,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for file_path in &parquet_files {
         // Check if we've reached our limit (if one was specified)
-        if let Some(limit) = total_rows {
-            if all_data.len() >= limit {
+        if let Some(limit) = total_rows
+            && all_data.len() >= limit {
                 break;
             }
-        }
 
         println!("\nLoading parquet file: {}", file_path);
 
@@ -161,16 +160,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Rows in file: {}", file_rows);
 
         // Build the reader
-        let mut reader = builder.build()?;
+        let reader = builder.build()?;
 
         // Process batches until we have enough rows
-        while let Some(batch_result) = reader.next() {
+        for batch_result in reader {
             // Check if we've reached our limit (if one was specified)
-            if let Some(limit) = total_rows {
-                if all_data.len() >= limit {
+            if let Some(limit) = total_rows
+                && all_data.len() >= limit {
                     break;
                 }
-            }
 
             let batch = batch_result?;
             total_batch_count += 1;
@@ -187,12 +185,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             all_data.extend(rows);
 
             // Trim to exactly total_rows if we went over
-            if let Some(limit) = total_rows {
-                if all_data.len() > limit {
+            if let Some(limit) = total_rows
+                && all_data.len() > limit {
                     all_data.truncate(limit);
                     break;
                 }
-            }
         }
     }
 

@@ -617,27 +617,24 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
 
     // Get the timestamp column - it might be Int64 or TimestampNanosecond
     let ts_column = batch.column(ts_idx);
-    let timestamps_vec: Vec<u64> = match ts_column.data_type() {
-        DataType::Int64 => {
-            let arr = ts_column
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .expect("Failed to downcast to Int64Array");
-            (0..arr.len()).map(|i| arr.value(i) as u64).collect()
-        }
-        DataType::Timestamp(_, _) => {
-            let arr = as_primitive_array::<TimestampNanosecondType>(ts_column);
-            (0..arr.len()).map(|i| arr.value(i) as u64).collect()
-        }
+    let timestamps_vec: Vec<Timestamp> = match ts_column.data_type() {
+        DataType::Int64 => as_primitive_array::<arrow::datatypes::Int64Type>(ts_column)
+            .values()
+            .iter()
+            .map(|v| *v as u64)
+            .collect(),
+        DataType::Timestamp(_, _) => as_primitive_array::<TimestampNanosecondType>(ts_column)
+            .values()
+            .iter()
+            .map(|v| *v as u64)
+            .collect(),
         dt => panic!("Unexpected data type for timestamp column: {:?}", dt),
     };
 
     // Build results
     let mut results = Vec::with_capacity(batch.num_rows());
 
-    for row_idx in 0..batch.num_rows() {
-        let ts = timestamps_vec[row_idx];
-
+    for (row_idx, ts) in timestamps_vec.iter().enumerate().take(batch.num_rows()) {
         // Collect all non-time column values for this row
         let mut row_values = BTreeMap::new();
 
@@ -736,7 +733,7 @@ pub fn extract_rows_from_batch(batch: RecordBatch) -> Vec<(Timestamp, RecordBatc
         }
 
         let row = RecordBatchRow::new(row_values);
-        results.push((ts, row));
+        results.push((*ts, row));
     }
 
     results
@@ -836,14 +833,12 @@ pub fn extract_time_series_from_batch(batch: RecordBatch) -> Vec<(Timestamp, Str
         // Collect tag values for this row
         let mut tag_string_parts = Vec::new();
         for (name, arr) in &tag_arrays {
-            if let Some(idx) = arr.key(row) {
-                if let Some(vals) = tag_values.get(name) {
-                    if let Some(val) = vals.get(idx) {
-                        if !val.is_empty() {
-                            tag_string_parts.push(format!("{}={}", name, val));
-                        }
-                    }
-                }
+            if let Some(idx) = arr.key(row)
+                && let Some(vals) = tag_values.get(name)
+                && let Some(val) = vals.get(idx)
+                && !val.is_empty()
+            {
+                tag_string_parts.push(format!("{}={}", name, val));
             }
         }
 
