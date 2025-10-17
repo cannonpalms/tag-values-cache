@@ -200,14 +200,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Filter to only keep the 4 optimal tag columns
-    println!("\nFiltering to only 4 tag columns: WithHash, CounterID, CookieEnable, URL");
+    println!("\nFiltering to only 4 tag columns: WithHash, CounterID, CookieEnable, URLHash");
     let filtered_data: Vec<(u64, RecordBatchRow)> = all_data
         .into_iter()
         .map(|(ts, row)| {
             // Create a new RecordBatchRow with only the 4 columns
             let mut filtered_values = std::collections::BTreeMap::new();
 
-            // Only keep WithHash, CounterID, CookieEnable, and URL
+            // Only keep WithHash, CounterID, CookieEnable, and URLHash
             if let Some(v) = row.values.get("WithHash") {
                 filtered_values.insert("WithHash".to_string(), v.clone());
             }
@@ -217,8 +217,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(v) = row.values.get("CookieEnable") {
                 filtered_values.insert("CookieEnable".to_string(), v.clone());
             }
-            if let Some(v) = row.values.get("URL") {
-                filtered_values.insert("URL".to_string(), v.clone());
+            if let Some(v) = row.values.get("URLHash") {
+                filtered_values.insert("URLHash".to_string(), v.clone());
             }
 
             (ts, RecordBatchRow::new(filtered_values))
