@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
     BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache,
-    RecordBatchRow, SegmentTreeCache, SortedData, ValueLapperCache, VecCache,
-    extract_rows_from_batch,
+    RecordBatchRow, SegmentTreeCache, SortedData, UnmergedBTreeCache, ValueLapperCache,
+    VecCache, extract_rows_from_batch,
 };
 
 fn print_usage() {
@@ -314,6 +314,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_duration(segment_tree_build_time)
     );
 
+    // Benchmark UnmergedBTreeCache
+    println!("Building UnmergedBTreeCache...");
+    let start = Instant::now();
+    let mut unmerged_btree_cache = UnmergedBTreeCache::from_sorted(sorted_data1.clone())?;
+    let unmerged_btree_build_time = start.elapsed();
+    println!(
+        "  UnmergedBTreeCache: {}",
+        format_duration(unmerged_btree_build_time)
+    );
+
     // Find fastest build
     let min_build = tree_build_time
         .min(vec_build_time)
@@ -321,7 +331,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .min(value_lapper_build_time)
         .min(btree_build_time)
         .min(nclist_build_time)
-        .min(segment_tree_build_time);
+        .min(segment_tree_build_time)
+        .min(unmerged_btree_build_time);
     let fastest_build = if min_build == vec_build_time {
         "VecCache"
     } else if min_build == tree_build_time {
@@ -334,8 +345,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BTreeCache"
     } else if min_build == nclist_build_time {
         "NCListCache"
-    } else {
+    } else if min_build == segment_tree_build_time {
         "SegmentTreeCache"
+    } else {
+        "UnmergedBTreeCache"
     };
     println!("\nFastest build: {fastest_build}\n");
 
@@ -369,8 +382,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nclist_cache.interval_count()
     );
     println!(
-        "  SegmentTreeCache:  {} intervals\n",
+        "  SegmentTreeCache:  {} intervals",
         segment_tree_cache.interval_count()
+    );
+    println!(
+        "  UnmergedBTreeCache: {} intervals\n",
+        unmerged_btree_cache.interval_count()
     );
 
     // Benchmark append performance (if configured)
@@ -382,6 +399,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         btree_append_time,
         nclist_append_time,
         segment_tree_append_time,
+        unmerged_btree_append_time,
     ) = if let Some(sorted_data2) = sorted_data2 {
         println!("=== Append Performance ===");
         println!("Appending {} rows...\n", second_half.len());
@@ -434,11 +452,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Append to SegmentTreeCache
         println!("Appending to SegmentTreeCache...");
         let start = Instant::now();
-        segment_tree_cache.append_sorted(sorted_data2)?;
+        segment_tree_cache.append_sorted(sorted_data2.clone())?;
         let segment_tree_append = start.elapsed();
         println!(
             "  SegmentTreeCache: {}",
             format_duration(segment_tree_append)
+        );
+
+        // Append to UnmergedBTreeCache
+        println!("Appending to UnmergedBTreeCache...");
+        let start = Instant::now();
+        unmerged_btree_cache.append_sorted(sorted_data2)?;
+        let unmerged_btree_append = start.elapsed();
+        println!(
+            "  UnmergedBTreeCache: {}",
+            format_duration(unmerged_btree_append)
         );
 
         (
@@ -449,10 +477,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             btree_append,
             nclist_append,
             segment_tree_append,
+            unmerged_btree_append,
         )
     } else {
         // No append phase
         (
+            Duration::from_secs(0),
             Duration::from_secs(0),
             Duration::from_secs(0),
             Duration::from_secs(0),
@@ -471,7 +501,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .min(value_lapper_append_time)
             .min(btree_append_time)
             .min(nclist_append_time)
-            .min(segment_tree_append_time);
+            .min(segment_tree_append_time)
+            .min(unmerged_btree_append_time);
         let fastest = if min_time == vec_append_time {
             "VecCache"
         } else if min_time == tree_append_time {
@@ -484,8 +515,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "BTreeCache"
         } else if min_time == nclist_append_time {
             "NCListCache"
-        } else {
+        } else if min_time == segment_tree_append_time {
             "SegmentTreeCache"
+        } else {
+            "UnmergedBTreeCache"
         };
         println!("\nFastest append: {fastest}\n");
         (min_time, fastest)
@@ -532,6 +565,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  SegmentTreeCache:  {} intervals",
         segment_tree_cache.interval_count()
     );
+    println!(
+        "  UnmergedBTreeCache: {} intervals",
+        unmerged_btree_cache.interval_count()
+    );
 
     // Calculate compression ratio
     let total_points = first_half.len() + second_half.len();
@@ -544,6 +581,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nclist_compression = (total_points as f64) / (nclist_cache.interval_count() as f64);
     let segment_tree_compression =
         (total_points as f64) / (segment_tree_cache.interval_count() as f64);
+    let unmerged_btree_compression =
+        (total_points as f64) / (unmerged_btree_cache.interval_count() as f64);
 
     println!("\nCompression ratio (data points / intervals):");
     println!("  IntervalTreeCache: {tree_compression:.2}x");
@@ -552,7 +591,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ValueLapperCache:  {value_lapper_compression:.2}x");
     println!("  BTreeCache:        {btree_compression:.2}x");
     println!("  NCListCache:       {nclist_compression:.2}x");
-    println!("  SegmentTreeCache:  {segment_tree_compression:.2}x\n");
+    println!("  SegmentTreeCache:  {segment_tree_compression:.2}x");
+    println!("  UnmergedBTreeCache: {unmerged_btree_compression:.2}x\n");
 
     // Generate query test points
     println!("=== Query Performance ===");
@@ -639,6 +679,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_duration(segment_tree_point_time)
     );
 
+    let start = Instant::now();
+    for &t in &test_points {
+        black_box(unmerged_btree_cache.query_point(t));
+    }
+    let unmerged_btree_point_time = start.elapsed();
+    println!(
+        "  UnmergedBTreeCache: {}",
+        format_duration(unmerged_btree_point_time)
+    );
+
     // Find fastest point query
     let min_point = tree_point_time
         .min(vec_point_time)
@@ -646,7 +696,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .min(value_lapper_point_time)
         .min(btree_point_time)
         .min(nclist_point_time)
-        .min(segment_tree_point_time);
+        .min(segment_tree_point_time)
+        .min(unmerged_btree_point_time);
     let fastest_point = if min_point == vec_point_time {
         "VecCache"
     } else if min_point == tree_point_time {
@@ -659,8 +710,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BTreeCache"
     } else if min_point == nclist_point_time {
         "NCListCache"
-    } else {
+    } else if min_point == segment_tree_point_time {
         "SegmentTreeCache"
+    } else {
+        "UnmergedBTreeCache"
     };
     println!("\n  Fastest: {fastest_point}");
 
@@ -722,6 +775,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_duration(segment_tree_range_time)
     );
 
+    let start = Instant::now();
+    for range in &test_ranges {
+        black_box(unmerged_btree_cache.query_range(range.clone()));
+    }
+    let unmerged_btree_range_time = start.elapsed();
+    println!(
+        "  UnmergedBTreeCache: {}",
+        format_duration(unmerged_btree_range_time)
+    );
+
     // Find fastest range query
     let min_range = tree_range_time
         .min(vec_range_time)
@@ -729,7 +792,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .min(value_lapper_range_time)
         .min(btree_range_time)
         .min(nclist_range_time)
-        .min(segment_tree_range_time);
+        .min(segment_tree_range_time)
+        .min(unmerged_btree_range_time);
     let fastest_range = if min_range == vec_range_time {
         "VecCache"
     } else if min_range == tree_range_time {
@@ -742,8 +806,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BTreeCache"
     } else if min_range == nclist_range_time {
         "NCListCache"
-    } else {
+    } else if min_range == segment_tree_range_time {
         "SegmentTreeCache"
+    } else {
+        "UnmergedBTreeCache"
     };
     println!("\n  Fastest: {fastest_range}");
 
@@ -762,6 +828,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let btree_result = btree_cache.query_point(t);
         let nclist_result = nclist_cache.query_point(t);
         let segment_tree_result = segment_tree_cache.query_point(t);
+        let unmerged_btree_result = unmerged_btree_cache.query_point(t);
 
         if tree_result != vec_result
             || tree_result != lapper_result
@@ -769,6 +836,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || tree_result != btree_result
             || tree_result != nclist_result
             || tree_result != segment_tree_result
+            || tree_result != unmerged_btree_result
         {
             println!("  MISMATCH at timestamp {t}:");
 
@@ -781,6 +849,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("BTreeCache", &btree_result),
                 ("NCListCache", &nclist_result),
                 ("SegmentTreeCache", &segment_tree_result),
+                ("UnmergedBTreeCache", &unmerged_btree_result),
             ];
 
             // Count how many results match each implementation
@@ -833,6 +902,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let btree_result = btree_cache.query_range(range.clone());
         let nclist_result = nclist_cache.query_range(range.clone());
         let segment_tree_result = segment_tree_cache.query_range(range.clone());
+        let unmerged_btree_result = unmerged_btree_cache.query_range(range.clone());
 
         if tree_result != vec_result
             || tree_result != lapper_result
@@ -840,6 +910,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || tree_result != btree_result
             || tree_result != nclist_result
             || tree_result != segment_tree_result
+            || tree_result != unmerged_btree_result
         {
             println!("  MISMATCH at range {:?}:", range);
 
@@ -852,6 +923,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("BTreeCache", &btree_result),
                 ("NCListCache", &nclist_result),
                 ("SegmentTreeCache", &segment_tree_result),
+                ("UnmergedBTreeCache", &unmerged_btree_result),
             ];
 
             // Count how many results match each implementation
@@ -912,6 +984,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let btree_memory = btree_cache.size_bytes();
     let nclist_memory = nclist_cache.size_bytes();
     let segment_tree_memory = segment_tree_cache.size_bytes();
+    let unmerged_btree_memory = unmerged_btree_cache.size_bytes();
 
     println!(
         "  IntervalTreeCache: {} ({} bytes)",
@@ -948,6 +1021,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_bytes(segment_tree_memory),
         segment_tree_memory
     );
+    println!(
+        "  UnmergedBTreeCache: {} ({} bytes)",
+        format_bytes(unmerged_btree_memory),
+        unmerged_btree_memory
+    );
 
     let min_memory = tree_memory
         .min(vec_memory)
@@ -955,7 +1033,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .min(value_lapper_memory)
         .min(btree_memory)
         .min(nclist_memory)
-        .min(segment_tree_memory);
+        .min(segment_tree_memory)
+        .min(unmerged_btree_memory);
     let lowest_memory = if min_memory == vec_memory {
         "VecCache"
     } else if min_memory == tree_memory {
@@ -968,8 +1047,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BTreeCache"
     } else if min_memory == nclist_memory {
         "NCListCache"
-    } else {
+    } else if min_memory == segment_tree_memory {
         "SegmentTreeCache"
+    } else {
+        "UnmergedBTreeCache"
     };
     println!("\nLowest memory usage: {lowest_memory}\n");
 

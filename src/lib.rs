@@ -34,6 +34,7 @@ pub mod interval_tree;
 pub mod lapper_cache;
 pub mod nclist_cache;
 pub mod segment_tree_cache;
+pub mod unmerged_btree_cache;
 pub mod value_lapper;
 pub mod value_lapper_cache;
 pub mod vec_cache;
@@ -44,6 +45,7 @@ pub use interval_tree::IntervalTreeCache;
 pub use lapper_cache::LapperCache;
 pub use nclist_cache::NCListCache;
 pub use segment_tree_cache::SegmentTreeCache;
+pub use unmerged_btree_cache::UnmergedBTreeCache;
 pub use value_lapper::ValueLapper;
 pub use value_lapper_cache::ValueLapperCache;
 pub use vec_cache::VecCache;
@@ -395,6 +397,14 @@ where
         V: Ord,
     {
         SegmentTreeCache::new(self.data)
+    }
+
+    /// Build an `UnmergedBTreeCache` from the data
+    pub fn build_unmerged_btree_cache(self) -> Result<UnmergedBTreeCache<V>, CacheBuildError>
+    where
+        V: Ord,
+    {
+        UnmergedBTreeCache::new(self.data)
     }
 
     /// Build a `ValueLapperCache` from the data
