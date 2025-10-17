@@ -28,16 +28,22 @@ use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::array::{RecordBatch, as_dictionary_array, as_primitive_array, as_string_array};
 use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
 
+pub mod btree_cache;
 pub mod interavl_cache;
 pub mod interval_tree;
 pub mod lapper_cache;
+pub mod nclist_cache;
+pub mod segment_tree_cache;
 pub mod value_lapper;
 pub mod value_lapper_cache;
 pub mod vec_cache;
 
 // Re-export the implementations for convenience
+pub use btree_cache::BTreeCache;
 pub use interval_tree::IntervalTreeCache;
 pub use lapper_cache::LapperCache;
+pub use nclist_cache::NCListCache;
+pub use segment_tree_cache::SegmentTreeCache;
 pub use value_lapper::ValueLapper;
 pub use value_lapper_cache::ValueLapperCache;
 pub use vec_cache::VecCache;
@@ -359,6 +365,13 @@ where
         VecCache::new(self.data)
     }
 
+    /// Build a `BTreeCache` from the data
+    pub fn build_btree_cache(self) -> Result<BTreeCache<V>, CacheBuildError>
+    where
+        V: Ord,
+    {
+        BTreeCache::new(self.data)
+    }
 
     /// Build a `LapperCache` from the data
     pub fn build_lapper_cache(self) -> Result<LapperCache<V>, CacheBuildError>
@@ -366,6 +379,22 @@ where
         V: Ord,
     {
         LapperCache::new(self.data)
+    }
+
+    /// Build an `NCListCache` from the data
+    pub fn build_nclist_cache(self) -> Result<NCListCache<V>, CacheBuildError>
+    where
+        V: Ord,
+    {
+        NCListCache::new(self.data)
+    }
+
+    /// Build a `SegmentTreeCache` from the data
+    pub fn build_segment_tree_cache(self) -> Result<SegmentTreeCache<V>, CacheBuildError>
+    where
+        V: Ord,
+    {
+        SegmentTreeCache::new(self.data)
     }
 
     /// Build a `ValueLapperCache` from the data
