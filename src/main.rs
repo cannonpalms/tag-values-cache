@@ -199,15 +199,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         start_load.elapsed()
     );
 
-    // Filter to only keep the 3 optimal tag columns
-    println!("\nFiltering to only 3 tag columns: WithHash, CounterID, CookieEnable");
+    // Filter to only keep the 4 optimal tag columns
+    println!("\nFiltering to only 4 tag columns: WithHash, CounterID, CookieEnable, URL");
     let filtered_data: Vec<(u64, RecordBatchRow)> = all_data
         .into_iter()
         .map(|(ts, row)| {
-            // Create a new RecordBatchRow with only the 3 columns
+            // Create a new RecordBatchRow with only the 4 columns
             let mut filtered_values = std::collections::BTreeMap::new();
 
-            // Only keep WithHash, CounterID, and CookieEnable
+            // Only keep WithHash, CounterID, CookieEnable, and URL
             if let Some(v) = row.values.get("WithHash") {
                 filtered_values.insert("WithHash".to_string(), v.clone());
             }
@@ -216,6 +216,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(v) = row.values.get("CookieEnable") {
                 filtered_values.insert("CookieEnable".to_string(), v.clone());
+            }
+            if let Some(v) = row.values.get("URL") {
+                filtered_values.insert("URL".to_string(), v.clone());
             }
 
             (ts, RecordBatchRow::new(filtered_values))
@@ -673,7 +676,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Summary
     println!("\n=== Summary ===");
     println!(
-        "Dataset: {} total rows processed (with 3 tag columns only)",
+        "Dataset: {} total rows processed (with 4 tag columns only)",
         first_half.len() + second_half.len()
     );
     println!("\nPerformance winners:");
