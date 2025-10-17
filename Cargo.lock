@@ -1006,6 +1006,7 @@ dependencies = [
  "arrow",
  "interavl",
  "intervaltree",
+ "num-traits",
  "parquet",
  "rust-lapper",
  "thiserror",

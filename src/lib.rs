@@ -32,6 +32,8 @@ pub mod interavl_alt_cache;
 pub mod interavl_cache;
 pub mod interval_tree;
 pub mod lapper_cache;
+pub mod value_lapper;
+pub mod value_lapper_cache;
 pub mod vec_cache;
 
 // Re-export the implementations for convenience
@@ -39,6 +41,8 @@ pub use interavl_alt_cache::InteravlAltCache;
 pub use interavl_cache::InteravlCache;
 pub use interval_tree::IntervalTreeCache;
 pub use lapper_cache::LapperCache;
+pub use value_lapper::ValueLapper;
+pub use value_lapper_cache::ValueLapperCache;
 pub use vec_cache::VecCache;
 
 /// The type used for timestamps (nanoseconds since epoch)
@@ -370,6 +374,14 @@ where
         V: Ord,
     {
         LapperCache::new(self.data)
+    }
+
+    /// Build a `ValueLapperCache` from the data
+    pub fn build_value_lapper_cache(self) -> Result<ValueLapperCache<V>, CacheBuildError>
+    where
+        V: Ord + Send + Sync,
+    {
+        ValueLapperCache::new(self.data)
     }
 }
 
