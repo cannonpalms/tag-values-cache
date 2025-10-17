@@ -25,8 +25,8 @@ use crate::{CacheBuildError, HeapSize, IntervalCache, Timestamp};
 /// A cache implementation using `BTreeMap` for interval storage.
 ///
 /// This implementation leverages the ordered nature of `BTreeMap` to efficiently
-/// query intervals. Each entry maps a start timestamp to its corresponding end
-/// timestamp and value.
+/// query intervals. Each entry maps a start timestamp to a vector of (end_time, value)
+/// tuples, allowing multiple overlapping intervals with the same start time.
 ///
 /// The BTree structure provides O(log n) lookup times and efficient range
 /// iteration, making it well-suited for both point and range queries.
@@ -39,9 +39,10 @@ pub struct BTreeCache<V>
 where
     V: Clone + Eq + Hash,
 {
-    /// Maps interval start times to (end_time, value) tuples.
+    /// Maps interval start times to vectors of (end_time, value) tuples.
     /// The BTreeMap maintains intervals sorted by start time.
-    intervals: BTreeMap<Timestamp, (Timestamp, V)>,
+    /// Multiple intervals can share the same start time (stored in the Vec).
+    intervals: BTreeMap<Timestamp, Vec<(Timestamp, V)>>,
 }
 
 impl<V> BTreeCache<V>
@@ -148,9 +149,13 @@ where
         let merged = Self::merge_intervals(temp_intervals);
 
         // Build BTreeMap from merged intervals
+        // Group intervals by start time to handle overlapping intervals
         let mut intervals = BTreeMap::new();
         for (range, value) in merged {
-            intervals.insert(range.start, (range.end, value));
+            intervals
+                .entry(range.start)
+                .or_insert_with(Vec::new)
+                .push((range.end, value));
         }
 
         Ok(Self { intervals })
@@ -166,11 +171,14 @@ where
         // Use BTreeMap's range() to efficiently find intervals that could contain t.
         // We need to check all intervals whose start <= t
         // The range query gives us an iterator over intervals in sorted order
-        for (&start, &(end, ref value)) in self.intervals.range(..=t) {
-            // Only include if the interval actually contains t
-            // Interval is [start, end) so we need start <= t < end
-            if start <= t && t < end {
-                results.insert(value);
+        for (&start, intervals_at_start) in self.intervals.range(..=t) {
+            // Check each interval that starts at this timestamp
+            for &(end, ref value) in intervals_at_start {
+                // Only include if the interval actually contains t
+                // Interval is [start, end) so we need start <= t < end
+                if start <= t && t < end {
+                    results.insert(value);
+                }
             }
         }
 
@@ -188,10 +196,12 @@ where
         // We need intervals whose start < range.end (they might overlap)
         // An interval [start, end) overlaps with [range.start, range.end) if:
         // start < range.end AND end > range.start
-        for (_, &(end, ref value)) in self.intervals.range(..range.end) {
-            // Check if this interval actually overlaps the query range
-            if end > range.start {
-                results.insert(value);
+        for (_, intervals_at_start) in self.intervals.range(..range.end) {
+            for &(end, ref value) in intervals_at_start {
+                // Check if this interval actually overlaps the query range
+                if end > range.start {
+                    results.insert(value);
+                }
             }
         }
 
@@ -217,13 +227,17 @@ where
         let mut all_intervals: Vec<(Range<Timestamp>, V)> = Vec::new();
 
         // Collect existing intervals
-        for (&start, &(end, ref value)) in &self.intervals {
-            all_intervals.push((start..end, value.clone()));
+        for (&start, intervals_at_start) in &self.intervals {
+            for &(end, ref value) in intervals_at_start {
+                all_intervals.push((start..end, value.clone()));
+            }
         }
 
         // Add new intervals
-        for (&start, &(end, ref value)) in &new_cache.intervals {
-            all_intervals.push((start..end, value.clone()));
+        for (&start, intervals_at_start) in &new_cache.intervals {
+            for &(end, ref value) in intervals_at_start {
+                all_intervals.push((start..end, value.clone()));
+            }
         }
 
         // Merge intervals using the same logic
@@ -232,7 +246,10 @@ where
         // Rebuild the BTreeMap from merged intervals
         self.intervals.clear();
         for (range, value) in merged {
-            self.intervals.insert(range.start, (range.end, value));
+            self.intervals
+                .entry(range.start)
+                .or_insert_with(Vec::new)
+                .push((range.end, value));
         }
 
         Ok(())
@@ -246,26 +263,32 @@ where
         let mut size = std::mem::size_of::<Self>();
 
         // BTreeMap has overhead for tree nodes (approximately 40 bytes per node)
-        // plus the size of keys and values
         const NODE_OVERHEAD: usize = 40;
         size += self.intervals.len() * NODE_OVERHEAD;
 
         // Size of keys (Timestamp = u64)
         size += self.intervals.len() * std::mem::size_of::<Timestamp>();
 
-        // Size of values (tuple of (Timestamp, V))
-        size += self.intervals.len() * std::mem::size_of::<(Timestamp, V)>();
+        // For each entry in the BTreeMap, we have a Vec
+        for (_, intervals_at_start) in &self.intervals {
+            // Vec overhead
+            size += std::mem::size_of::<Vec<(Timestamp, V)>>();
 
-        // Add heap size for values if they contain heap-allocated data
-        for (_, (_, value)) in &self.intervals {
-            size += value.heap_size();
+            // Capacity of the Vec
+            size += intervals_at_start.capacity() * std::mem::size_of::<(Timestamp, V)>();
+
+            // Add heap size for values if they contain heap-allocated data
+            for (_, value) in intervals_at_start {
+                size += value.heap_size();
+            }
         }
 
         size
     }
 
     fn interval_count(&self) -> usize {
-        self.intervals.len()
+        // Count total number of intervals across all start times
+        self.intervals.values().map(|v| v.len()).sum()
     }
 }
 
@@ -388,5 +411,81 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.contains(&&"A".to_string()));
         assert!(result.contains(&&"B".to_string()));
+    }
+
+    #[test]
+    fn test_btree_cache_overlapping_values() {
+        // This is a minimal reproducer for the bug where BTreeCache reports
+        // fewer intervals but may be missing data
+        use crate::VecCache;
+
+        let data = vec![
+            (1, "A".to_string()),
+            (2, "B".to_string()),
+            (3, "A".to_string()),
+        ];
+
+        let btree_cache = BTreeCache::new(data.clone()).unwrap();
+        let vec_cache = VecCache::new(data).unwrap();
+
+        println!("BTreeCache intervals: {}", btree_cache.interval_count());
+        println!("VecCache intervals: {}", vec_cache.interval_count());
+
+        // Test all points
+        for t in 1..=3 {
+            let btree_result = btree_cache.query_point(t);
+            let vec_result = vec_cache.query_point(t);
+
+            println!("t={}: BTree={:?}, Vec={:?}", t, btree_result, vec_result);
+
+            assert_eq!(
+                btree_result, vec_result,
+                "Mismatch at timestamp {}: BTree={:?}, Vec={:?}",
+                t, btree_result, vec_result
+            );
+        }
+    }
+
+    #[test]
+    fn test_btree_cache_duplicate_timestamps() {
+        // Test case with duplicate timestamps (same timestamp, different values)
+        // This tests overlapping intervals
+        use crate::VecCache;
+
+        let data = vec![
+            (1, "A".to_string()),
+            (1, "B".to_string()),  // Same timestamp as previous
+            (2, "A".to_string()),
+            (2, "B".to_string()),
+        ];
+
+        let btree_cache = BTreeCache::new(data.clone()).unwrap();
+        let vec_cache = VecCache::new(data).unwrap();
+
+        println!("\n=== Duplicate Timestamp Test ===");
+        println!("BTreeCache intervals: {}", btree_cache.interval_count());
+        println!("VecCache intervals: {}", vec_cache.interval_count());
+
+        // Inspect internal state
+        println!("\nBTreeCache internal intervals:");
+        for (&start, intervals_at_start) in &btree_cache.intervals {
+            for &(end, ref value) in intervals_at_start {
+                println!("  [{}, {}) -> {:?}", start, end, value);
+            }
+        }
+
+        // Test all points
+        for t in 1..=2 {
+            let btree_result = btree_cache.query_point(t);
+            let vec_result = vec_cache.query_point(t);
+
+            println!("t={}: BTree={:?}, Vec={:?}", t, btree_result, vec_result);
+
+            assert_eq!(
+                btree_result, vec_result,
+                "Mismatch at timestamp {}: BTree={:?}, Vec={:?}",
+                t, btree_result, vec_result
+            );
+        }
     }
 }
