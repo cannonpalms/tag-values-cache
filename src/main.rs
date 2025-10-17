@@ -689,6 +689,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("\n  Fastest: {fastest_range}");
 
+    // Verify all caches return the same results
+    println!("\n=== Result Verification ===");
+    println!("Verifying that all caches return identical results...\n");
+
+    let mut all_match = true;
+
+    // Verify point queries
+    for &t in &test_points {
+        let tree_result = tree_cache.query_point(t);
+        let vec_result = vec_cache.query_point(t);
+        let avl_result = avl_cache.query_point(t);
+        let avl_alt_result = avl_alt_cache.query_point(t);
+        let lapper_result = lapper_cache.query_point(t);
+        let value_lapper_result = value_lapper_cache.query_point(t);
+
+        if tree_result != vec_result
+            || tree_result != avl_result
+            || tree_result != avl_alt_result
+            || tree_result != lapper_result
+            || tree_result != value_lapper_result
+        {
+            println!("  MISMATCH at timestamp {t}:");
+            println!("    IntervalTreeCache: {:#?}", tree_result);
+            println!("    VecCache:          {:#?}", vec_result);
+            println!("    InteravlCache:     {:#?}", avl_result);
+            println!("    InteravlAltCache:  {:#?}", avl_alt_result);
+            println!("    LapperCache:       {:#?}", lapper_result);
+            println!("    ValueLapperCache:  {:#?}", value_lapper_result);
+            all_match = false;
+        }
+    }
+
+    // Verify range queries
+    for range in &test_ranges {
+        let tree_result = tree_cache.query_range(range.clone());
+        let vec_result = vec_cache.query_range(range.clone());
+        let avl_result = avl_cache.query_range(range.clone());
+        let avl_alt_result = avl_alt_cache.query_range(range.clone());
+        let lapper_result = lapper_cache.query_range(range.clone());
+        let value_lapper_result = value_lapper_cache.query_range(range.clone());
+
+        if tree_result != vec_result
+            || tree_result != avl_result
+            || tree_result != avl_alt_result
+            || tree_result != lapper_result
+            || tree_result != value_lapper_result
+        {
+            println!("  MISMATCH at range {:?}:", range);
+            println!("    IntervalTreeCache: {:#?}", tree_result);
+            println!("    VecCache:          {:#?}", vec_result);
+            println!("    InteravlCache:     {:#?}", avl_result);
+            println!("    InteravlAltCache:  {:#?}", avl_alt_result);
+            println!("    LapperCache:       {:#?}", lapper_result);
+            println!("    ValueLapperCache:  {:#?}", value_lapper_result);
+            all_match = false;
+        }
+    }
+
+    if all_match {
+        println!("  ✓ All caches return identical results");
+    } else {
+        println!("  ✗ Result mismatches detected!");
+    }
+
     // Measure memory usage
     println!("\n=== Memory Usage ===");
     println!("Measuring actual memory usage for each cache implementation...\n");
