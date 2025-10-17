@@ -271,4 +271,73 @@ mod tests {
         assert!(range_values.contains(&&"A".to_string()));
         assert!(range_values.contains(&&"B".to_string()));
     }
+
+    /// This test demonstrates a known limitation of InteravlCache.
+    ///
+    /// # Problem
+    ///
+    /// When multiple different values exist at the same timestamp, InteravlCache
+    /// creates multiple intervals with identical ranges (e.g., both [5, 6)). When
+    /// these intervals are inserted into the `interavl` crate's `IntervalTree`,
+    /// only the last one is retained because the tree does not support duplicate
+    /// ranges.
+    ///
+    /// # Root Cause
+    ///
+    /// The `interavl` crate's `IntervalTree::insert()` method overwrites any
+    /// existing interval with the same range. When we have:
+    /// - Interval 1: [5, 6) -> value A
+    /// - Interval 2: [5, 6) -> value B
+    ///
+    /// After insertion, only value B remains in the tree.
+    ///
+    /// # Impact
+    ///
+    /// Any dataset with multiple distinct values at the same timestamp will lose
+    /// all but the last value during tree construction (lines 131-134 in from_sorted).
+    ///
+    /// # Expected Behavior
+    ///
+    /// This test is marked with `#[should_panic]` because the current implementation
+    /// is known to fail. The correct behavior would be to return both values.
+    ///
+    /// # Potential Fixes
+    ///
+    /// 1. Store `Vec<usize>` in the tree instead of single `usize`
+    /// 2. Switch to a different interval tree library that supports duplicates
+    /// 3. Group identical-range intervals before tree insertion
+    #[test]
+    #[should_panic(expected = "InteravlCache loses records with duplicate timestamps")]
+    fn test_known_bug_duplicate_timestamp_values() {
+        use crate::{RecordBatchRow, ArrowValue};
+        use std::collections::BTreeMap;
+
+        // Create two different RecordBatchRow values
+        let mut values1 = BTreeMap::new();
+        values1.insert("field".to_string(), ArrowValue::Int64(1));
+        let row1 = RecordBatchRow::new(values1);
+
+        let mut values2 = BTreeMap::new();
+        values2.insert("field".to_string(), ArrowValue::Int64(2));
+        let row2 = RecordBatchRow::new(values2);
+
+        // Both at timestamp 5
+        let data = vec![
+            (5, row1.clone()),
+            (5, row2.clone()),
+        ];
+
+        let cache = InteravlCache::new(data).unwrap();
+
+        // Query timestamp 5
+        let result = cache.query_point(5);
+
+        // EXPECTED: Both values should be present
+        // ACTUAL: Only one value (the last inserted) is present
+        assert_eq!(
+            result.len(),
+            2,
+            "InteravlCache loses records with duplicate timestamps"
+        );
+    }
 }

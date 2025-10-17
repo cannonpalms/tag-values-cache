@@ -271,4 +271,38 @@ mod tests {
         assert!(range_values.contains(&&"A".to_string()));
         assert!(range_values.contains(&&"B".to_string()));
     }
+
+    /// This test demonstrates a known limitation of InteravlAltCache.
+    ///
+    /// See the documentation in `interavl_cache.rs` for the identical test
+    /// `test_known_bug_duplicate_timestamp_values` for a full explanation.
+    ///
+    /// InteravlAltCache has the same bug as InteravlCache because both use
+    /// the `interavl` crate's `IntervalTree` which does not support multiple
+    /// intervals with identical ranges.
+    #[test]
+    #[should_panic(expected = "InteravlAltCache loses records with duplicate timestamps")]
+    fn test_known_bug_duplicate_timestamp_values() {
+        use crate::{RecordBatchRow, ArrowValue};
+        use std::collections::BTreeMap;
+
+        let mut values1 = BTreeMap::new();
+        values1.insert("field".to_string(), ArrowValue::Int64(1));
+        let row1 = RecordBatchRow::new(values1);
+
+        let mut values2 = BTreeMap::new();
+        values2.insert("field".to_string(), ArrowValue::Int64(2));
+        let row2 = RecordBatchRow::new(values2);
+
+        let data = vec![(5, row1), (5, row2)];
+
+        let cache = InteravlAltCache::new(data).unwrap();
+        let result = cache.query_point(5);
+
+        assert_eq!(
+            result.len(),
+            2,
+            "InteravlAltCache loses records with duplicate timestamps"
+        );
+    }
 }

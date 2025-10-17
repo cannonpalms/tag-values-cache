@@ -711,12 +711,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || tree_result != value_lapper_result
         {
             println!("  MISMATCH at timestamp {t}:");
-            println!("    IntervalTreeCache: {:?}", tree_result);
-            println!("    VecCache:          {:?}", vec_result);
-            println!("    InteravlCache:     {:?}", avl_result);
-            println!("    InteravlAltCache:  {:?}", avl_alt_result);
-            println!("    LapperCache:       {:?}", lapper_result);
-            println!("    ValueLapperCache:  {:?}", value_lapper_result);
+
+            // Find the majority result by comparing all pairs
+            let results = vec![
+                ("IntervalTreeCache", &tree_result),
+                ("VecCache", &vec_result),
+                ("InteravlCache", &avl_result),
+                ("InteravlAltCache", &avl_alt_result),
+                ("LapperCache", &lapper_result),
+                ("ValueLapperCache", &value_lapper_result),
+            ];
+
+            // Count how many results match each implementation
+            let mut match_counts = vec![0; results.len()];
+            for i in 0..results.len() {
+                for j in 0..results.len() {
+                    if results[i].1 == results[j].1 {
+                        match_counts[i] += 1;
+                    }
+                }
+            }
+
+            // Find the result with the most matches
+            // Not foolproof, but I do not have the correct answers to compare against
+            let majority_idx = match_counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, count)| *count)
+                .map(|(idx, _)| idx)
+                .unwrap();
+            let majority_result = results[majority_idx].1;
+
+            for (name, result) in &results {
+                if result != &majority_result {
+                    let missing: Vec<_> = majority_result.difference(result).collect();
+                    let extra: Vec<_> = result.difference(majority_result).collect();
+                    print!("    {name}: ");
+                    if !missing.is_empty() {
+                        print!("missing {:?}", missing);
+                    }
+                    if !extra.is_empty() {
+                        if !missing.is_empty() {
+                            print!(", ");
+                        }
+                        print!("extra {:?}", extra);
+                    }
+                    println!();
+                }
+            }
             all_match = false;
         }
     }
@@ -737,12 +779,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || tree_result != value_lapper_result
         {
             println!("  MISMATCH at range {:?}:", range);
-            println!("    IntervalTreeCache: {:?}", tree_result);
-            println!("    VecCache:          {:?}", vec_result);
-            println!("    InteravlCache:     {:?}", avl_result);
-            println!("    InteravlAltCache:  {:?}", avl_alt_result);
-            println!("    LapperCache:       {:?}", lapper_result);
-            println!("    ValueLapperCache:  {:?}", value_lapper_result);
+
+            // Find the majority result by comparing all pairs
+            let results = vec![
+                ("IntervalTreeCache", &tree_result),
+                ("VecCache", &vec_result),
+                ("InteravlCache", &avl_result),
+                ("InteravlAltCache", &avl_alt_result),
+                ("LapperCache", &lapper_result),
+                ("ValueLapperCache", &value_lapper_result),
+            ];
+
+            // Count how many results match each implementation
+            let mut match_counts = vec![0; results.len()];
+            for i in 0..results.len() {
+                for j in 0..results.len() {
+                    if results[i].1 == results[j].1 {
+                        match_counts[i] += 1;
+                    }
+                }
+            }
+
+            // Find the result with the most matches
+            let majority_idx = match_counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, count)| *count)
+                .map(|(idx, _)| idx)
+                .unwrap();
+            let majority_result = results[majority_idx].1;
+
+            for (name, result) in &results {
+                if result != &majority_result {
+                    let missing: Vec<_> = majority_result.difference(result).collect();
+                    let extra: Vec<_> = result.difference(majority_result).collect();
+                    print!("    {name}: ");
+                    if !missing.is_empty() {
+                        print!("missing {:?}", missing);
+                    }
+                    if !extra.is_empty() {
+                        if !missing.is_empty() {
+                            print!(", ");
+                        }
+                        print!("extra {:?}", extra);
+                    }
+                    println!();
+                }
+            }
             all_match = false;
         }
     }
