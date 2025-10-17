@@ -3,7 +3,7 @@
 //! This implementation uses rust-lapper's interval tree, which provides
 //! fast interval overlap queries and is optimized for genomic data workloads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
 
@@ -157,32 +157,32 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> Vec<&V> {
+    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
         let start = t as usize;
         let stop = (t + 1) as usize;
 
-        let mut results = Vec::new();
+        let mut results = HashSet::new();
 
         // Query all lappers and collect results
         for (value, lapper) in &self.lappers {
             if lapper.find(start, stop).next().is_some() {
-                results.push(value);
+                results.insert(value);
             }
         }
 
         results
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<&V> {
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
         let start = range.start as usize;
         let stop = range.end as usize;
 
-        let mut results = Vec::new();
+        let mut results = HashSet::new();
 
         // Query all lappers and collect unique values
         for (value, lapper) in &self.lappers {
             if lapper.find(start, stop).next().is_some() {
-                results.push(value);
+                results.insert(value);
             }
         }
 
@@ -262,11 +262,11 @@ mod tests {
         let cache = LapperCache::new(data).unwrap();
 
         // Check merged intervals
-        assert_eq!(cache.query_point(0), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(3), Vec::<&String>::new());
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
     }
 
     #[test]
@@ -282,8 +282,8 @@ mod tests {
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.iter().any(|v| **v == "X".to_string()));
-        assert!(values_at_1.iter().any(|v| **v == "Y".to_string()));
+        assert!(values_at_1.contains(&&"X".to_string()));
+        assert!(values_at_1.contains(&&"Y".to_string()));
     }
 
     #[test]
@@ -300,8 +300,8 @@ mod tests {
 
         let range_values = cache.query_range(0..15);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.iter().any(|v| **v == "A".to_string()));
-        assert!(range_values.iter().any(|v| **v == "B".to_string()));
+        assert!(range_values.contains(&&"A".to_string()));
+        assert!(range_values.contains(&&"B".to_string()));
     }
 
     #[test]
@@ -320,7 +320,7 @@ mod tests {
 
         cache.append_batch(append_data).unwrap();
 
-        assert_eq!(cache.query_point(0), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
     }
 }

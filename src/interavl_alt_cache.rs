@@ -3,7 +3,7 @@
 //! This implementation uses an AVL tree-based interval tree, which provides
 //! guaranteed O(log n) operations and automatic balancing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
 
@@ -139,7 +139,7 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> Vec<&V> {
+    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
         let point_interval = t..(t + 1);
 
         self.tree
@@ -148,18 +148,10 @@ where
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<&V> {
-        // Collect unique values to avoid duplicates
-        let mut seen = std::collections::HashSet::new();
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
         self.tree
             .iter_overlaps(&range)
-            .filter_map(|(_, idx)| {
-                self.intervals.get(*idx).and_then(
-                    |(_, v)| {
-                        if seen.insert(v) { Some(v) } else { None }
-                    },
-                )
-            })
+            .filter_map(|(_, idx)| self.intervals.get(*idx).map(|(_, v)| v))
             .collect()
     }
 
@@ -238,11 +230,11 @@ mod tests {
         let cache = InteravlAltCache::new(data).unwrap();
 
         // Check merged intervals
-        assert_eq!(cache.query_point(0), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(3), Vec::<&String>::new());
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
     }
 
     #[test]
@@ -258,8 +250,8 @@ mod tests {
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.iter().any(|v| **v == "X".to_string()));
-        assert!(values_at_1.iter().any(|v| **v == "Y".to_string()));
+        assert!(values_at_1.contains(&&"X".to_string()));
+        assert!(values_at_1.contains(&&"Y".to_string()));
     }
 
     #[test]
@@ -276,7 +268,7 @@ mod tests {
 
         let range_values = cache.query_range(0..15);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.iter().any(|v| **v == "A".to_string()));
-        assert!(range_values.iter().any(|v| **v == "B".to_string()));
+        assert!(range_values.contains(&&"A".to_string()));
+        assert!(range_values.contains(&&"B".to_string()));
     }
 }

@@ -19,7 +19,7 @@
 //! let values = cache.query_point(2);  // Returns ["A"]
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::ops::Range;
 use std::rc::Rc;
@@ -255,9 +255,10 @@ where
     /// * `t` - The timestamp to query
     ///
     /// # Returns
-    /// A vector of references to all values at the given timestamp.
-    /// Returns an empty vector if no values exist at that timestamp.
-    fn query_point(&self, t: Timestamp) -> Vec<&V>;
+    /// A set of references to all values at the given timestamp.
+    /// Returns an empty set if no values exist at that timestamp.
+    /// The order of values in the set is unspecified.
+    fn query_point(&self, t: Timestamp) -> HashSet<&V>;
 
     /// Query for all values that exist within a time range.
     ///
@@ -267,9 +268,10 @@ where
     /// * `range` - The time range to query [start, end)
     ///
     /// # Returns
-    /// A vector of references to all unique values within the range.
-    /// Returns an empty vector if no values exist in the range.
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<&V>;
+    /// A set of references to all unique values within the range.
+    /// Returns an empty set if no values exist in the range.
+    /// The order of values in the set is unspecified.
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V>;
 
     /// Append a batch of pre-sorted timestamp-value pairs to the cache.
     ///

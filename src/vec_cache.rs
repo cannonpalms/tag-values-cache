@@ -8,6 +8,7 @@
 //! Query operations use binary search on the sorted starts array to reduce
 //! the number of intervals that need to be checked.
 
+use std::collections::HashSet;
 use std::hash::Hash;
 use std::ops::Range;
 
@@ -166,8 +167,8 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> Vec<&V> {
-        let mut results = Vec::new();
+    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
+        let mut results = HashSet::new();
 
         if self.starts.is_empty() {
             return results;
@@ -182,16 +183,15 @@ where
         // But we can stop at first_after since those intervals start after t
         for i in 0..first_after {
             if self.ends[i] > t {
-                results.push(&self.values[i]);
+                results.insert(&self.values[i]);
             }
         }
 
         results
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<&V> {
-        let mut results = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
+        let mut results = HashSet::new();
 
         if self.starts.is_empty() {
             return results;
@@ -210,10 +210,9 @@ where
         // Linear scan from the beginning up to first_after
         // This is actually optimal given our data structure constraints
         for i in 0..first_after {
-            if self.ends[i] > range.start
-                && seen.insert(&self.values[i]) {
-                    results.push(&self.values[i]);
-                }
+            if self.ends[i] > range.start {
+                results.insert(&self.values[i]);
+            }
         }
 
         results
@@ -318,10 +317,10 @@ mod tests {
 
         let cache = VecCache::new(data).unwrap();
 
-        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(3), Vec::<&String>::new());
-        assert_eq!(cache.query_point(4), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
+        assert_eq!(cache.query_point(4), HashSet::from([&"B".to_string()]));
     }
 
     #[test]
@@ -337,7 +336,7 @@ mod tests {
 
         let range_values = cache.query_range(1..6);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.iter().any(|v| **v == "A".to_string()));
-        assert!(range_values.iter().any(|v| **v == "B".to_string()));
+        assert!(range_values.contains(&&"A".to_string()));
+        assert!(range_values.contains(&&"B".to_string()));
     }
 }

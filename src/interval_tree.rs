@@ -4,7 +4,7 @@
 //! store and query time intervals. It merges consecutive timestamps with
 //! identical values into continuous intervals.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
 
@@ -45,11 +45,11 @@ where
         Ok(Self { tree })
     }
 
-    fn query_point(&self, t: Timestamp) -> Vec<&V> {
+    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
         self.query_point_impl(t)
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<&V> {
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
         self.query_range_impl(range)
     }
 
@@ -214,24 +214,13 @@ where
     }
 
     /// Query for all values at a specific timestamp.
-    fn query_point_impl(&self, t: u64) -> Vec<&V> {
+    fn query_point_impl(&self, t: u64) -> HashSet<&V> {
         self.tree.query_point(t).map(|entry| &entry.value).collect()
     }
 
     /// Query for all values within a range.
-    fn query_range_impl(&self, range: Range<u64>) -> Vec<&V> {
-        // Collect unique values to avoid duplicates
-        let mut seen = std::collections::HashSet::new();
-        self.tree
-            .query(range)
-            .filter_map(|entry| {
-                if seen.insert(&entry.value) {
-                    Some(&entry.value)
-                } else {
-                    None
-                }
-            })
-            .collect()
+    fn query_range_impl(&self, range: Range<u64>) -> HashSet<&V> {
+        self.tree.query(range).map(|entry| &entry.value).collect()
     }
 }
 
@@ -252,16 +241,16 @@ mod tests {
         let cache = IntervalTreeCache::new(data).unwrap();
 
         // Check that consecutive "A" values are merged
-        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(3), vec![&"A".to_string()]);
+        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(3), HashSet::from([&"A".to_string()]));
 
         // Gap at timestamp 4
-        assert_eq!(cache.query_point(4), Vec::<&String>::new());
+        assert_eq!(cache.query_point(4), HashSet::<&String>::new());
 
         // Check "B" values
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
-        assert_eq!(cache.query_point(6), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
+        assert_eq!(cache.query_point(6), HashSet::from([&"B".to_string()]));
     }
 
     #[test]
@@ -296,8 +285,8 @@ mod tests {
         // Query range [1, 6) should return A and B but not C (since 6 is exclusive)
         let range_values = cache.query_range(1..6);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.iter().any(|v| **v == "A".to_string()));
-        assert!(range_values.iter().any(|v| **v == "B".to_string()));
+        assert!(range_values.contains(&&"A".to_string()));
+        assert!(range_values.contains(&&"B".to_string()));
     }
 
     #[test]
@@ -312,10 +301,10 @@ mod tests {
         let cache = IntervalTreeCache::new(data).unwrap();
 
         // Should still correctly merge consecutive values after sorting
-        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
-        assert_eq!(cache.query_point(6), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
+        assert_eq!(cache.query_point(6), HashSet::from([&"B".to_string()]));
     }
 
     #[test]

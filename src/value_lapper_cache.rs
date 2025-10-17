@@ -4,6 +4,7 @@
 //! ValueLapper internally, which only merges intervals when both boundaries
 //! AND values match.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use rust_lapper::Interval;
@@ -96,7 +97,7 @@ where
         Ok(Self { value_lapper })
     }
 
-    fn query_point(&self, t: Timestamp) -> Vec<&V> {
+    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
         let start = t;
         let stop = t + 1;
 
@@ -106,21 +107,14 @@ where
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<&V> {
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
         let start = range.start;
         let stop = range.end;
 
-        // Collect unique values
-        let mut seen = std::collections::HashSet::new();
-        let mut results = Vec::new();
-
-        for interval in self.value_lapper.find(start, stop) {
-            if seen.insert(&interval.val) {
-                results.push(&interval.val);
-            }
-        }
-
-        results
+        self.value_lapper
+            .find(start, stop)
+            .map(|interval| &interval.val)
+            .collect()
     }
 
     fn append_sorted(&mut self, sorted_data: SortedData<V>) -> Result<(), CacheBuildError> {
@@ -178,11 +172,11 @@ mod tests {
         let cache = ValueLapperCache::new(data).unwrap();
 
         // Check merged intervals
-        assert_eq!(cache.query_point(0), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(1), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(2), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(3), Vec::<&String>::new());
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
     }
 
     #[test]
@@ -198,8 +192,8 @@ mod tests {
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.iter().any(|v| **v == "X".to_string()));
-        assert!(values_at_1.iter().any(|v| **v == "Y".to_string()));
+        assert!(values_at_1.contains(&&"X".to_string()));
+        assert!(values_at_1.contains(&&"Y".to_string()));
     }
 
     #[test]
@@ -216,8 +210,8 @@ mod tests {
 
         let range_values = cache.query_range(0..15);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.iter().any(|v| **v == "A".to_string()));
-        assert!(range_values.iter().any(|v| **v == "B".to_string()));
+        assert!(range_values.contains(&&"A".to_string()));
+        assert!(range_values.contains(&&"B".to_string()));
     }
 
     #[test]
@@ -230,8 +224,8 @@ mod tests {
 
         cache.append_batch(append_data).unwrap();
 
-        assert_eq!(cache.query_point(0), vec![&"A".to_string()]);
-        assert_eq!(cache.query_point(5), vec![&"B".to_string()]);
+        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
+        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
     }
 
     #[test]
@@ -249,13 +243,13 @@ mod tests {
         // Both values should be present at timestamp 0 and 1
         let values_at_0 = cache.query_point(0);
         assert_eq!(values_at_0.len(), 2);
-        assert!(values_at_0.iter().any(|v| **v == "A".to_string()));
-        assert!(values_at_0.iter().any(|v| **v == "B".to_string()));
+        assert!(values_at_0.contains(&&"A".to_string()));
+        assert!(values_at_0.contains(&&"B".to_string()));
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.iter().any(|v| **v == "A".to_string()));
-        assert!(values_at_1.iter().any(|v| **v == "B".to_string()));
+        assert!(values_at_1.contains(&&"A".to_string()));
+        assert!(values_at_1.contains(&&"B".to_string()));
 
         // Should have 2 intervals total (one for A, one for B)
         assert_eq!(cache.interval_count(), 2);

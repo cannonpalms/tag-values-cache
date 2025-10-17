@@ -711,12 +711,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || tree_result != value_lapper_result
         {
             println!("  MISMATCH at timestamp {t}:");
-            println!("    IntervalTreeCache: {:#?}", tree_result);
-            println!("    VecCache:          {:#?}", vec_result);
-            println!("    InteravlCache:     {:#?}", avl_result);
-            println!("    InteravlAltCache:  {:#?}", avl_alt_result);
-            println!("    LapperCache:       {:#?}", lapper_result);
-            println!("    ValueLapperCache:  {:#?}", value_lapper_result);
+            println!("    IntervalTreeCache: {:?}", tree_result);
+            println!("    VecCache:          {:?}", vec_result);
+            println!("    InteravlCache:     {:?}", avl_result);
+            println!("    InteravlAltCache:  {:?}", avl_alt_result);
+            println!("    LapperCache:       {:?}", lapper_result);
+            println!("    ValueLapperCache:  {:?}", value_lapper_result);
             all_match = false;
         }
     }
@@ -737,12 +737,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || tree_result != value_lapper_result
         {
             println!("  MISMATCH at range {:?}:", range);
-            println!("    IntervalTreeCache: {:#?}", tree_result);
-            println!("    VecCache:          {:#?}", vec_result);
-            println!("    InteravlCache:     {:#?}", avl_result);
-            println!("    InteravlAltCache:  {:#?}", avl_alt_result);
-            println!("    LapperCache:       {:#?}", lapper_result);
-            println!("    ValueLapperCache:  {:#?}", value_lapper_result);
+            println!("    IntervalTreeCache: {:?}", tree_result);
+            println!("    VecCache:          {:?}", vec_result);
+            println!("    InteravlCache:     {:?}", avl_result);
+            println!("    InteravlAltCache:  {:?}", avl_alt_result);
+            println!("    LapperCache:       {:?}", lapper_result);
+            println!("    ValueLapperCache:  {:?}", value_lapper_result);
             all_match = false;
         }
     }
