@@ -28,7 +28,6 @@ use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::array::{RecordBatch, as_dictionary_array, as_primitive_array, as_string_array};
 use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
 
-pub mod interavl_alt_cache;
 pub mod interavl_cache;
 pub mod interval_tree;
 pub mod lapper_cache;
@@ -36,10 +35,7 @@ pub mod value_lapper;
 pub mod value_lapper_cache;
 pub mod vec_cache;
 
-
 // Re-export the implementations for convenience
-pub use interavl_alt_cache::InteravlAltCache;
-pub use interavl_cache::InteravlCache;
 pub use interval_tree::IntervalTreeCache;
 pub use lapper_cache::LapperCache;
 pub use value_lapper::ValueLapper;
@@ -363,13 +359,6 @@ where
         VecCache::new(self.data)
     }
 
-    /// Build an `InteravlCache` (AVL-based) from the data
-    pub fn build_interavl_cache(self) -> Result<InteravlCache<V>, CacheBuildError>
-    where
-        V: Ord,
-    {
-        InteravlCache::new(self.data)
-    }
 
     /// Build a `LapperCache` from the data
     pub fn build_lapper_cache(self) -> Result<LapperCache<V>, CacheBuildError>

@@ -15,6 +15,62 @@ use crate::{CacheBuildError, HeapSize, IntervalCache, Timestamp};
 ///
 /// This provides guaranteed O(log n) operations with automatic balancing,
 /// which can be beneficial for datasets with many updates or unbalanced intervals.
+///
+/// # ⚠️ NOT UNDER CONSIDERATION FOR PRODUCTION USE
+///
+/// This implementation has been removed from consideration due to a critical bug
+/// that causes data loss when multiple distinct values exist at the same timestamp.
+///
+/// ## The Problem
+///
+/// When multiple different values exist at the same timestamp, `InteravlCache`
+/// creates multiple intervals with identical ranges (e.g., both `[5, 6)`). When
+/// these intervals are inserted into the `interavl` crate's `IntervalTree`,
+/// **only the last one is retained** because the tree does not support duplicate ranges.
+///
+/// ### Example of Data Loss:
+/// ```text
+/// Input:  (5, RecordBatchRow { "a": 1 })
+///         (5, RecordBatchRow { "a": 2 })
+///
+/// Expected: Both values at timestamp 5
+/// Actual:   Only RecordBatchRow { "a": 2 } is retained
+/// ```
+///
+/// ## Root Cause
+///
+/// The `interavl::IntervalTree::insert()` method overwrites any existing interval
+/// with the same range. During tree construction (see `from_sorted`, lines 131-134),
+/// when we insert:
+/// - First:  `tree.insert([5, 6), index_0)` → value A
+/// - Second: `tree.insert([5, 6), index_1)` → value B (overwrites index_0!)
+///
+/// ## Impact
+///
+/// Any dataset with multiple distinct values at the same timestamp will lose all
+/// but the last value during tree construction and query operations.
+///
+/// ## Why Not Fixed?
+///
+/// Potential fixes would require fundamental changes:
+/// 1. **Store `Vec<usize>` instead of `usize`** - Would require extensive refactoring
+///    of the tree operations and query logic
+/// 2. **Switch interval tree libraries** - The `interavl` crate is not designed for
+///    duplicate ranges
+/// 3. **Pre-group identical ranges** - Would add significant complexity and overhead
+///
+/// ## Alternative Implementations
+///
+/// Use one of these production-ready implementations instead:
+/// - **`ValueLapperCache`** - Fastest for most workloads, handles duplicates correctly
+/// - **`LapperCache`** - Good balance of speed and memory, handles duplicates correctly
+/// - **`VecCache`** - Simple and correct, handles duplicates correctly
+/// - **`IntervalTreeCache`** - Uses a different tree library, handles duplicates correctly
+///
+/// ## References
+///
+/// - Bug documentation: `docs/INTERAVL_BUG_ROOT_CAUSE.md`
+/// - Reproducer test: `test_known_bug_duplicate_timestamp_values()` (line 311)
 pub struct InteravlCache<V>
 where
     V: Clone + Eq + Hash,

@@ -2,7 +2,7 @@
 
 ## The Bug
 
-When InteravlCache and InteravlAltCache have multiple values at the same timestamp, they create multiple intervals with identical ranges but different values. When these are inserted into the `interavl` crate's `IntervalTree`, **only the last one is retained**.
+When InteravlCache has multiple values at the same timestamp, it creates multiple intervals with identical ranges but different values. When these are inserted into the `interavl` crate's `IntervalTree`, **only the last one is retained**.
 
 ## Proof
 
@@ -47,7 +47,7 @@ let overlaps: Vec<_> = tree.iter_overlaps(&(5..6)).collect();
 - **VecCache**: Uses a Vec, allows duplicate ranges
 - **IntervalTreeCache**: Uses a different interval tree implementation (interval-tree crate)
 - **LapperCache/ValueLapperCache**: Uses rust-lapper which handles duplicates
-- **InteravlCache/InteravlAltCache**: Both use the interavl crate which has this limitation
+- **InteravlCache**: Uses the interavl crate which has this limitation
 
 ## Possible Fixes
 
@@ -98,6 +98,6 @@ Any dataset with:
 - Multiple different values at the same timestamp
 - That get built into intervals with identical ranges [t, t+1)
 
-Will lose all but the last value when using InteravlCache or InteravlAltCache.
+Will lose all but the last value when using InteravlCache.
 
 This explains why the ClickBench data shows missing records - it likely has multiple tag combinations at the same timestamps.
