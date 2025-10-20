@@ -35,8 +35,8 @@ pub mod lapper_cache;
 pub mod nclist_cache;
 pub mod segment_tree_cache;
 pub mod unmerged_btree_cache;
-pub mod value_lapper;
-pub mod value_lapper_cache;
+pub mod value_aware_lapper;
+pub mod value_aware_lapper_cache;
 pub mod vec_cache;
 
 // Re-export the implementations for convenience
@@ -46,8 +46,8 @@ pub use lapper_cache::LapperCache;
 pub use nclist_cache::NCListCache;
 pub use segment_tree_cache::SegmentTreeCache;
 pub use unmerged_btree_cache::UnmergedBTreeCache;
-pub use value_lapper::ValueLapper;
-pub use value_lapper_cache::ValueLapperCache;
+pub use value_aware_lapper::ValueAwareLapper;
+pub use value_aware_lapper_cache::ValueAwareLapperCache;
 pub use vec_cache::VecCache;
 
 /// The type used for timestamps (nanoseconds since epoch)
@@ -407,12 +407,12 @@ where
         UnmergedBTreeCache::new(self.data)
     }
 
-    /// Build a `ValueLapperCache` from the data
-    pub fn build_value_lapper_cache(self) -> Result<ValueLapperCache<V>, CacheBuildError>
+    /// Build a `ValueAwareLapperCache` from the data
+    pub fn build_value_aware_lapper_cache(self) -> Result<ValueAwareLapperCache<V>, CacheBuildError>
     where
         V: Ord + Send + Sync,
     {
-        ValueLapperCache::new(self.data)
+        ValueAwareLapperCache::new(self.data)
     }
 }
 

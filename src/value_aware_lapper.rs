@@ -16,7 +16,7 @@ use std::ops::Range;
 /// # Type Parameters
 /// * `T` - The numeric type for interval boundaries (must satisfy rust-lapper's requirements)
 /// * `V` - The value type (must be Clone + Eq for value-aware merging)
-pub struct ValueLapper<T, V>
+pub struct ValueAwareLapper<T, V>
 where
     T: PrimInt + Unsigned + Ord + Clone + Send + Sync,
     V: Clone + Eq + Ord + Send + Sync,
@@ -25,12 +25,12 @@ where
     lapper: Lapper<T, V>,
 }
 
-impl<T, V> ValueLapper<T, V>
+impl<T, V> ValueAwareLapper<T, V>
 where
     T: PrimInt + Unsigned + Ord + Clone + Send + Sync,
     V: Clone + Eq + Ord + Send + Sync,
 {
-    /// Create a new ValueLapper from a vector of intervals.
+    /// Create a new ValueAwareLapper from a vector of intervals.
     ///
     /// The intervals will be sorted by start position as required by rust-lapper.
     ///
@@ -41,13 +41,13 @@ where
     /// # Example
     /// ```ignore
     /// use rust_lapper::Interval;
-    /// use tag_values_cache::ValueLapper;
+    /// use tag_values_cache::ValueAwareLapper;
     ///
     /// let intervals = vec![
     ///     Interval { start: 5, stop: 10, val: "A" },
     ///     Interval { start: 5, stop: 10, val: "B" }, // Same boundaries, different value
     /// ];
-    /// let vlapper = ValueLapper::new(intervals);
+    /// let vlapper = ValueAwareLapper::new(intervals);
     /// ```
     pub fn new(mut intervals: Vec<Interval<T, V>>) -> Self {
         intervals.sort_by(|a, b| a.start.cmp(&b.start));
@@ -145,17 +145,17 @@ where
         self.lapper.find(start, stop)
     }
 
-    /// Get the number of intervals in this ValueLapper.
+    /// Get the number of intervals in this ValueAwareLapper.
     pub fn len(&self) -> usize {
         self.lapper.len()
     }
 
-    /// Check if this ValueLapper is empty.
+    /// Check if this ValueAwareLapper is empty.
     pub fn is_empty(&self) -> bool {
         self.lapper.is_empty()
     }
 
-    /// Iterate over all intervals in this ValueLapper.
+    /// Iterate over all intervals in this ValueAwareLapper.
     pub fn iter(&self) -> impl Iterator<Item = &Interval<T, V>> {
         self.lapper.iter()
     }
@@ -174,7 +174,7 @@ where
 
     /// Get a reference to the underlying Lapper.
     ///
-    /// This allows access to other Lapper methods not wrapped by ValueLapper.
+    /// This allows access to other Lapper methods not wrapped by ValueAwareLapper.
     pub fn inner(&self) -> &Lapper<T, V> {
         &self.lapper
     }
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_value_lapper() {
+    fn test_new_value_aware_lapper() {
         let intervals = vec![
             Interval {
                 start: 5u32,
@@ -206,7 +206,7 @@ mod tests {
             },
         ];
 
-        let vlapper = ValueLapper::new(intervals);
+        let vlapper = ValueAwareLapper::new(intervals);
         assert_eq!(vlapper.len(), 2);
     }
 
@@ -225,7 +225,7 @@ mod tests {
             }, // Same value, overlapping
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         assert_eq!(vlapper.len(), 1);
@@ -250,7 +250,7 @@ mod tests {
             }, // Same value, adjacent
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         assert_eq!(vlapper.len(), 1);
@@ -274,7 +274,7 @@ mod tests {
             }, // Same boundaries, different value
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         // Should NOT merge - different values
@@ -296,7 +296,7 @@ mod tests {
             }, // Overlapping, different value
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         // Should NOT merge - different values
@@ -323,7 +323,7 @@ mod tests {
             }, // Another duplicate
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         assert_eq!(vlapper.len(), 1);
@@ -344,7 +344,7 @@ mod tests {
             }, // Same value but gap
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         // Should NOT merge - gap between intervals
@@ -381,7 +381,7 @@ mod tests {
             }, // Overlapping with A's, different value
         ];
 
-        let mut vlapper = ValueLapper::new(intervals);
+        let mut vlapper = ValueAwareLapper::new(intervals);
         vlapper.merge_with_values();
 
         // Should have:
@@ -424,7 +424,7 @@ mod tests {
             },
         ];
 
-        let vlapper = ValueLapper::new(intervals);
+        let vlapper = ValueAwareLapper::new(intervals);
 
         // Query at position 7 should return both A and B
         let results: Vec<_> = vlapper.find(7u32, 8u32).collect();
@@ -453,7 +453,7 @@ mod tests {
             },
         ];
 
-        let vlapper = ValueLapper::new(intervals);
+        let vlapper = ValueAwareLapper::new(intervals);
 
         // Query range that overlaps first interval
         let results: Vec<_> = vlapper.find_range(0u32..12u32).collect();

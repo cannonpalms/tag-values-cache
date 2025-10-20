@@ -46,7 +46,7 @@ let overlaps: Vec<_> = tree.iter_overlaps(&(5..6)).collect();
 
 - **VecCache**: Uses a Vec, allows duplicate ranges
 - **IntervalTreeCache**: Uses a different interval tree implementation (interval-tree crate)
-- **LapperCache/ValueLapperCache**: Uses rust-lapper which handles duplicates
+- **LapperCache/ValueAwareLapperCache**: Uses rust-lapper which handles duplicates
 - **InteravlCache**: Uses the interavl crate which has this limitation
 
 ## Possible Fixes

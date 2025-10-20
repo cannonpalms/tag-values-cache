@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
     BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, RecordBatchRow,
-    SegmentTreeCache, SortedData, UnmergedBTreeCache, ValueLapperCache, VecCache,
+    SegmentTreeCache, SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
     extract_rows_from_batch,
 };
 
@@ -280,13 +280,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lapper_build_time = start.elapsed();
     println!("  LapperCache: {}", format_duration(lapper_build_time));
 
-    // Benchmark ValueLapperCache
-    println!("Building ValueLapperCache...");
+    // Benchmark ValueAwareLapperCache
+    println!("Building ValueAwareLapperCache...");
     let start = Instant::now();
-    let mut value_lapper_cache = ValueLapperCache::from_sorted(sorted_data1.clone())?;
+    let mut value_aware_lapper_cache = ValueAwareLapperCache::from_sorted(sorted_data1.clone())?;
     let value_lapper_build_time = start.elapsed();
     println!(
-        "  ValueLapperCache: {}",
+        "  ValueAwareLapperCache: {}",
         format_duration(value_lapper_build_time)
     );
 
@@ -340,7 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if min_build == lapper_build_time {
         "LapperCache"
     } else if min_build == value_lapper_build_time {
-        "ValueLapperCache"
+        "ValueAwareLapperCache"
     } else if min_build == btree_build_time {
         "BTreeCache"
     } else if min_build == nclist_build_time {
@@ -370,8 +370,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lapper_cache.interval_count()
     );
     println!(
-        "  ValueLapperCache:  {} intervals",
-        value_lapper_cache.interval_count()
+        "  ValueAwareLapperCache:  {} intervals",
+        value_aware_lapper_cache.interval_count()
     );
     println!(
         "  BTreeCache:        {} intervals",
@@ -425,13 +425,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let lapper_append = start.elapsed();
         println!("  LapperCache: {}", format_duration(lapper_append));
 
-        // Append to ValueLapperCache
-        println!("Appending to ValueLapperCache...");
+        // Append to ValueAwareLapperCache
+        println!("Appending to ValueAwareLapperCache...");
         let start = Instant::now();
-        value_lapper_cache.append_sorted(sorted_data2.clone())?;
+        value_aware_lapper_cache.append_sorted(sorted_data2.clone())?;
         let value_lapper_append = start.elapsed();
         println!(
-            "  ValueLapperCache: {}",
+            "  ValueAwareLapperCache: {}",
             format_duration(value_lapper_append)
         );
 
@@ -510,7 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if min_time == lapper_append_time {
             "LapperCache"
         } else if min_time == value_lapper_append_time {
-            "ValueLapperCache"
+            "ValueAwareLapperCache"
         } else if min_time == btree_append_time {
             "BTreeCache"
         } else if min_time == nclist_append_time {
@@ -550,8 +550,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lapper_cache.interval_count()
     );
     println!(
-        "  ValueLapperCache:  {} intervals",
-        value_lapper_cache.interval_count()
+        "  ValueAwareLapperCache:  {} intervals",
+        value_aware_lapper_cache.interval_count()
     );
     println!(
         "  BTreeCache:        {} intervals",
@@ -576,7 +576,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vec_compression = (total_points as f64) / (vec_cache.interval_count() as f64);
     let lapper_compression = (total_points as f64) / (lapper_cache.interval_count() as f64);
     let value_lapper_compression =
-        (total_points as f64) / (value_lapper_cache.interval_count() as f64);
+        (total_points as f64) / (value_aware_lapper_cache.interval_count() as f64);
     let btree_compression = (total_points as f64) / (btree_cache.interval_count() as f64);
     let nclist_compression = (total_points as f64) / (nclist_cache.interval_count() as f64);
     // let segment_tree_compression =
@@ -588,7 +588,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  IntervalTreeCache: {tree_compression:.2}x");
     println!("  VecCache:          {vec_compression:.2}x");
     println!("  LapperCache:       {lapper_compression:.2}x");
-    println!("  ValueLapperCache:  {value_lapper_compression:.2}x");
+    println!("  ValueAwareLapperCache:  {value_lapper_compression:.2}x");
     println!("  BTreeCache:        {btree_compression:.2}x");
     println!("  NCListCache:       {nclist_compression:.2}x");
     // println!("  SegmentTreeCache:  {segment_tree_compression:.2}x");
@@ -647,11 +647,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     for &t in &test_points {
-        black_box(value_lapper_cache.query_point(t));
+        black_box(value_aware_lapper_cache.query_point(t));
     }
     let value_lapper_point_time = start.elapsed();
     println!(
-        "  ValueLapperCache: {}",
+        "  ValueAwareLapperCache: {}",
         format_duration(value_lapper_point_time)
     );
 
@@ -705,7 +705,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if min_point == lapper_point_time {
         "LapperCache"
     } else if min_point == value_lapper_point_time {
-        "ValueLapperCache"
+        "ValueAwareLapperCache"
     } else if min_point == btree_point_time {
         "BTreeCache"
     } else if min_point == nclist_point_time {
@@ -743,11 +743,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(value_lapper_cache.query_range(range.clone()));
+        black_box(value_aware_lapper_cache.query_range(range.clone()));
     }
     let value_lapper_range_time = start.elapsed();
     println!(
-        "  ValueLapperCache: {}",
+        "  ValueAwareLapperCache: {}",
         format_duration(value_lapper_range_time)
     );
 
@@ -801,7 +801,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if min_range == lapper_range_time {
         "LapperCache"
     } else if min_range == value_lapper_range_time {
-        "ValueLapperCache"
+        "ValueAwareLapperCache"
     } else if min_range == btree_range_time {
         "BTreeCache"
     } else if min_range == nclist_range_time {
@@ -824,7 +824,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tree_result = tree_cache.query_point(t);
         let vec_result = vec_cache.query_point(t);
         let lapper_result = lapper_cache.query_point(t);
-        let value_lapper_result = value_lapper_cache.query_point(t);
+        let value_lapper_result = value_aware_lapper_cache.query_point(t);
         let btree_result = btree_cache.query_point(t);
         let nclist_result = nclist_cache.query_point(t);
         // let segment_tree_result = segment_tree_cache.query_point(t);
@@ -845,7 +845,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("IntervalTreeCache", &tree_result),
                 ("VecCache", &vec_result),
                 ("LapperCache", &lapper_result),
-                ("ValueLapperCache", &value_lapper_result),
+                ("ValueAwareLapperCache", &value_lapper_result),
                 ("BTreeCache", &btree_result),
                 ("NCListCache", &nclist_result),
                 // ("SegmentTreeCache", &segment_tree_result),
@@ -898,7 +898,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tree_result = tree_cache.query_range(range.clone());
         let vec_result = vec_cache.query_range(range.clone());
         let lapper_result = lapper_cache.query_range(range.clone());
-        let value_lapper_result = value_lapper_cache.query_range(range.clone());
+        let value_lapper_result = value_aware_lapper_cache.query_range(range.clone());
         let btree_result = btree_cache.query_range(range.clone());
         let nclist_result = nclist_cache.query_range(range.clone());
         // let segment_tree_result = segment_tree_cache.query_range(range.clone());
@@ -919,7 +919,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("IntervalTreeCache", &tree_result),
                 ("VecCache", &vec_result),
                 ("LapperCache", &lapper_result),
-                ("ValueLapperCache", &value_lapper_result),
+                ("ValueAwareLapperCache", &value_lapper_result),
                 ("BTreeCache", &btree_result),
                 ("NCListCache", &nclist_result),
                 // ("SegmentTreeCache", &segment_tree_result),
@@ -980,7 +980,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tree_memory = tree_cache.size_bytes();
     let vec_memory = vec_cache.size_bytes();
     let lapper_memory = lapper_cache.size_bytes();
-    let value_lapper_memory = value_lapper_cache.size_bytes();
+    let value_lapper_memory = value_aware_lapper_cache.size_bytes();
     let btree_memory = btree_cache.size_bytes();
     let nclist_memory = nclist_cache.size_bytes();
     // let segment_tree_memory = segment_tree_cache.size_bytes();
@@ -1002,7 +1002,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lapper_memory
     );
     println!(
-        "  ValueLapperCache:  {} ({} bytes)",
+        "  ValueAwareLapperCache:  {} ({} bytes)",
         format_bytes(value_lapper_memory),
         value_lapper_memory
     );
@@ -1042,7 +1042,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else if min_memory == lapper_memory {
         "LapperCache"
     } else if min_memory == value_lapper_memory {
-        "ValueLapperCache"
+        "ValueAwareLapperCache"
     } else if min_memory == btree_memory {
         "BTreeCache"
     } else if min_memory == nclist_memory {

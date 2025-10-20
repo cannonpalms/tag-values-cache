@@ -1,7 +1,7 @@
-//! `IntervalCache` implementation using ValueLapper for value-aware merging.
+//! `IntervalCache` implementation using ValueAwareLapper for value-aware merging.
 //!
 //! This implementation provides the same interface as LapperCache but uses
-//! ValueLapper internally, which only merges intervals when both boundaries
+//! ValueAwareLapper internally, which only merges intervals when both boundaries
 //! AND values match.
 
 use std::collections::HashSet;
@@ -9,22 +9,22 @@ use std::ops::Range;
 
 use rust_lapper::Interval;
 
-use crate::{value_lapper::ValueLapper, CacheBuildError, HeapSize, IntervalCache, SortedData, Timestamp};
+use crate::{value_aware_lapper::ValueAwareLapper, CacheBuildError, HeapSize, IntervalCache, SortedData, Timestamp};
 
-/// An interval cache implementation using ValueLapper.
+/// An interval cache implementation using ValueAwareLapper.
 ///
 /// Unlike LapperCache which uses a HashMap to separate intervals by value,
-/// ValueLapperCache uses a single ValueLapper instance that handles value-aware
+/// ValueAwareLapperCache uses a single ValueAwareLapper instance that handles value-aware
 /// merging internally through sorting.
-pub struct ValueLapperCache<V>
+pub struct ValueAwareLapperCache<V>
 where
     V: Clone + Eq + Ord + std::hash::Hash + Send + Sync,
 {
-    /// The ValueLapper instance containing all intervals
-    value_lapper: ValueLapper<u64, V>,
+    /// The ValueAwareLapper instance containing all intervals
+    value_lapper: ValueAwareLapper<u64, V>,
 }
 
-impl<V> ValueLapperCache<V>
+impl<V> ValueAwareLapperCache<V>
 where
     V: Clone + Eq + Ord + std::hash::Hash + Send + Sync,
 {
@@ -83,7 +83,7 @@ where
     }
 }
 
-impl<V> IntervalCache<V> for ValueLapperCache<V>
+impl<V> IntervalCache<V> for ValueAwareLapperCache<V>
 where
     V: Clone + Eq + Ord + std::hash::Hash + Send + Sync,
 {
@@ -91,7 +91,7 @@ where
         let points = sorted_data.into_inner();
         let intervals = Self::build_intervals(points)?;
 
-        let mut value_lapper = ValueLapper::new(intervals);
+        let mut value_lapper = ValueAwareLapper::new(intervals);
         value_lapper.merge_with_values();
 
         Ok(Self { value_lapper })
@@ -126,7 +126,7 @@ where
         all_intervals.extend(new_intervals);
 
         // Rebuild with all intervals and merge
-        self.value_lapper = ValueLapper::new(all_intervals);
+        self.value_lapper = ValueAwareLapper::new(all_intervals);
         self.value_lapper.merge_with_values();
 
         Ok(())
@@ -139,7 +139,7 @@ where
         // Size of the struct itself
         let mut size = std::mem::size_of::<Self>();
 
-        // Size of all intervals in the ValueLapper
+        // Size of all intervals in the ValueAwareLapper
         size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, V>>();
 
         // Add heap size for values
@@ -160,7 +160,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_value_lapper_cache_basic() {
+    fn test_value_aware_lapper_cache_basic() {
         let data = vec![
             (0, "A".to_string()),
             (1, "A".to_string()),
@@ -169,7 +169,7 @@ mod tests {
             (6, "B".to_string()),
         ];
 
-        let cache = ValueLapperCache::new(data).unwrap();
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
         // Check merged intervals
         assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_value_lapper_cache_overlapping() {
+    fn test_value_aware_lapper_cache_overlapping() {
         let data = vec![
             (0, "X".to_string()),
             (1, "X".to_string()),
@@ -188,7 +188,7 @@ mod tests {
             (2, "Y".to_string()),
         ];
 
-        let cache = ValueLapperCache::new(data).unwrap();
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn test_value_lapper_cache_range_query() {
+    fn test_value_aware_lapper_cache_range_query() {
         let data = vec![
             (0, "A".to_string()),
             (1, "A".to_string()),
@@ -206,7 +206,7 @@ mod tests {
             (20, "C".to_string()),
         ];
 
-        let cache = ValueLapperCache::new(data).unwrap();
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
         let range_values = cache.query_range(0..15);
         assert_eq!(range_values.len(), 2);
@@ -215,10 +215,10 @@ mod tests {
     }
 
     #[test]
-    fn test_value_lapper_cache_append() {
+    fn test_value_aware_lapper_cache_append() {
         let initial_data = vec![(0, "A".to_string()), (1, "A".to_string())];
 
-        let mut cache = ValueLapperCache::new(initial_data).unwrap();
+        let mut cache = ValueAwareLapperCache::new(initial_data).unwrap();
 
         let append_data = vec![(5, "B".to_string()), (6, "B".to_string())];
 
@@ -238,7 +238,7 @@ mod tests {
             (1, "B".to_string()),
         ];
 
-        let cache = ValueLapperCache::new(data).unwrap();
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
         // Both values should be present at timestamp 0 and 1
         let values_at_0 = cache.query_point(0);

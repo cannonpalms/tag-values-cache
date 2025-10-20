@@ -62,7 +62,7 @@ use crate::{CacheBuildError, HeapSize, IntervalCache, Timestamp};
 /// ## Alternative Implementations
 ///
 /// Use one of these production-ready implementations instead:
-/// - **`ValueLapperCache`** - Fastest for most workloads, handles duplicates correctly
+/// - **`ValueAwareLapperCache`** - Fastest for most workloads, handles duplicates correctly
 /// - **`LapperCache`** - Good balance of speed and memory, handles duplicates correctly
 /// - **`VecCache`** - Simple and correct, handles duplicates correctly
 /// - **`IntervalTreeCache`** - Uses a different tree library, handles duplicates correctly
