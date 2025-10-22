@@ -5,6 +5,7 @@
 
 use num_traits::{PrimInt, Unsigned};
 use rust_lapper::{Interval, Lapper};
+use std::fmt;
 use std::ops::Range;
 
 /// A wrapper around rust-lapper's Lapper that provides value-aware merging.
@@ -184,6 +185,19 @@ where
     /// Helper method for working with Rust's Range types.
     pub fn find_range(&self, range: Range<T>) -> impl Iterator<Item = &Interval<T, V>> {
         self.find(range.start, range.end)
+    }
+}
+
+impl<T, V> fmt::Debug for ValueAwareLapper<T, V>
+where
+    T: PrimInt + Unsigned + Ord + Clone + Send + Sync + fmt::Debug,
+    V: Clone + Eq + Ord + Send + Sync + fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValueAwareLapper")
+            .field("len", &self.len())
+            .field("intervals", &self.lapper.iter().collect::<Vec<_>>())
+            .finish()
     }
 }
 

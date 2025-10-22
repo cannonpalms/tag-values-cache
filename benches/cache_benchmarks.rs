@@ -129,7 +129,11 @@ fn bench_build(c: &mut Criterion) {
     for cardinality in [100, 1_000, 10_000, 100_000, 1_000_000] {
         for value_size in [8, 128, 512, 1024] {
             // Use 1M rows for 1M cardinality, 100K rows for everything else
-            let num_rows = if cardinality == 1_000_000 { 1_000_000 } else { 100_000 };
+            let num_rows = if cardinality == 1_000_000 {
+                1_000_000
+            } else {
+                100_000
+            };
 
             group.throughput(Throughput::Elements(num_rows as u64));
 
@@ -139,7 +143,8 @@ fn bench_build(c: &mut Criterion) {
             macro_rules! bench_cache_build {
                 ($cache_type:ty, $name:expr) => {
                     let lfsr = Lfsr::default();
-                    let (data, _) = generate_data_with_lfsr(num_rows, cardinality, value_size, lfsr);
+                    let (data, _) =
+                        generate_data_with_lfsr(num_rows, cardinality, value_size, lfsr);
                     let sorted_data = SortedData::from_sorted(data);
 
                     group.bench_with_input(
@@ -159,7 +164,10 @@ fn bench_build(c: &mut Criterion) {
             bench_cache_build!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_build!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_build!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_build!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            bench_cache_build!(
+                ValueAwareLapperCache<RecordBatchRow>,
+                "ValueAwareLapperCache"
+            );
             bench_cache_build!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_build!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_build!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
@@ -176,7 +184,11 @@ fn bench_append(c: &mut Criterion) {
     for cardinality in [100, 1_000, 10_000, 100_000, 1_000_000] {
         for value_size in [8, 128, 512, 1024] {
             // Use 1M rows for 1M cardinality, 100K rows for everything else, split 50/50
-            let total_rows = if cardinality == 1_000_000 { 1_000_000 } else { 100_000 };
+            let total_rows = if cardinality == 1_000_000 {
+                1_000_000
+            } else {
+                100_000
+            };
             let initial_rows = total_rows / 2;
             let append_rows = total_rows - initial_rows;
 
@@ -217,7 +229,10 @@ fn bench_append(c: &mut Criterion) {
             bench_cache_append!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_append!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_append!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_append!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            bench_cache_append!(
+                ValueAwareLapperCache<RecordBatchRow>,
+                "ValueAwareLapperCache"
+            );
             bench_cache_append!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_append!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_append!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
@@ -235,7 +250,11 @@ fn bench_point_queries(c: &mut Criterion) {
     for cardinality in [100, 1_000, 10_000, 100_000, 1_000_000] {
         for value_size in [8, 128, 512, 1024] {
             // Use 1M rows for 1M cardinality, 100K rows for everything else
-            let num_rows = if cardinality == 1_000_000 { 1_000_000 } else { 100_000 };
+            let num_rows = if cardinality == 1_000_000 {
+                1_000_000
+            } else {
+                100_000
+            };
 
             // Generate data with LFSR
             let lfsr = Lfsr::default();
@@ -294,7 +313,10 @@ fn bench_point_queries(c: &mut Criterion) {
             bench_cache_hits_misses!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_hits_misses!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_hits_misses!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_hits_misses!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            bench_cache_hits_misses!(
+                ValueAwareLapperCache<RecordBatchRow>,
+                "ValueAwareLapperCache"
+            );
             bench_cache_hits_misses!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_hits_misses!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_hits_misses!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
@@ -312,7 +334,11 @@ fn bench_range_queries(c: &mut Criterion) {
     for cardinality in [100, 1_000, 10_000, 100_000, 1_000_000] {
         for value_size in [8, 128, 512, 1024] {
             // Use 1M rows for 1M cardinality, 100K rows for everything else
-            let num_rows = if cardinality == 1_000_000 { 1_000_000 } else { 100_000 };
+            let num_rows = if cardinality == 1_000_000 {
+                1_000_000
+            } else {
+                100_000
+            };
 
             // Generate data with LFSR
             let lfsr = Lfsr::default();
@@ -363,7 +389,10 @@ fn bench_range_queries(c: &mut Criterion) {
             bench_cache_range!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_range!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_range!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_range!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            bench_cache_range!(
+                ValueAwareLapperCache<RecordBatchRow>,
+                "ValueAwareLapperCache"
+            );
             bench_cache_range!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_range!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_range!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
