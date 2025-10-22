@@ -88,11 +88,10 @@ fn parse_line_protocol_file(path: &Path) -> std::io::Result<Vec<(u64, RecordBatc
 
     for line in reader.lines() {
         let line = line?;
-        if !line.trim().is_empty() && !line.starts_with('#') {
-            if let Some(parsed) = parse_line_protocol(&line) {
+        if !line.trim().is_empty() && !line.starts_with('#')
+            && let Some(parsed) = parse_line_protocol(&line) {
                 results.push(parsed);
             }
-        }
     }
 
     Ok(results)
@@ -127,7 +126,7 @@ fn analyze_tag_statistics(data: &[(u64, RecordBatchRow)]) -> (usize, usize, BTre
 
                 // Track unique values per tag key
                 tag_value_counts.entry(key.clone())
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(value.to_string());
 
                 // Build tag combination for cardinality calculation

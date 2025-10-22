@@ -1,13 +1,13 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 use tag_values_cache::{
-    ArrowValue, RecordBatchRow, SortedData, ValueAwareLapperCache, IntervalCache,
+    ArrowValue, IntervalCache, RecordBatchRow, SortedData, ValueAwareLapperCache,
 };
-use parquet::file::reader::{FileReader, SerializedFileReader};
-use std::fs::File;
 
 use std::collections::HashSet;
 
@@ -53,21 +53,25 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
 
     parquet_files.sort();
 
-    println!("\nLoading parquet files (stopping at {}M cardinality or 7 days of data)...\n", max_cardinality / 1_000_000);
+    println!(
+        "\nLoading parquet files (stopping at {}M cardinality or 7 days of data)...\n",
+        max_cardinality / 1_000_000
+    );
 
     // Read all parquet files in the directory
     for (file_index, path) in parquet_files.iter().enumerate() {
         println!("Loading: {:?}", path.file_name().unwrap_or_default());
 
-        let file = File::open(&path)?;
+        let file = File::open(path)?;
         let reader = SerializedFileReader::new(file)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        let mut row_iter = reader.get_row_iter(None)
+        let row_iter = reader
+            .get_row_iter(None)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let mut file_data = Vec::new();
-        while let Some(record_result) = row_iter.next() {
+        for record_result in row_iter {
             match record_result {
                 Ok(record) => {
                     if let Some((timestamp, row)) = parse_parquet_row(&record) {
@@ -86,11 +90,7 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
 
         let file_min_ts = file_data.iter().map(|(ts, _)| *ts).min().unwrap_or(0);
         let file_max_ts = file_data.iter().map(|(ts, _)| *ts).max().unwrap_or(0);
-        let file_duration_ns = if file_max_ts > file_min_ts {
-            file_max_ts - file_min_ts
-        } else {
-            0
-        };
+        let file_duration_ns = file_max_ts.saturating_sub(file_min_ts);
         let file_duration_secs = file_duration_ns / 1_000_000_000;
 
         // Calculate cardinality before and after adding this file
@@ -109,22 +109,43 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
 
         // Print statistics
         println!("  Rows: {} ({} total)", file_rows, total_rows);
-        println!("  Duration: {}s ({} total)", file_duration_secs, total_duration_secs);
-        println!("  Cardinality: +{} ({} total)", file_cardinality, total_cardinality);
+        println!(
+            "  Duration: {}s ({} total)",
+            file_duration_secs, total_duration_secs
+        );
+        println!(
+            "  Cardinality: +{} ({} total)",
+            file_cardinality, total_cardinality
+        );
         println!();
 
         // Stop if we've reached either limit
         if total_cardinality >= max_cardinality {
-            println!("Reached target cardinality of {}M. Stopping.", max_cardinality / 1_000_000);
-            println!("Loaded {} files with {} total rows\n", file_index + 1, total_rows);
+            println!(
+                "Reached target cardinality of {}M. Stopping.",
+                max_cardinality / 1_000_000
+            );
+            println!(
+                "Loaded {} files with {} total rows\n",
+                file_index + 1,
+                total_rows
+            );
             break;
         }
 
         if total_duration_ns >= max_duration_ns {
             let days = total_duration_ns / (24 * 60 * 60 * 1_000_000_000);
-            let hours = (total_duration_ns % (24 * 60 * 60 * 1_000_000_000)) / (60 * 60 * 1_000_000_000);
-            println!("Reached target duration of 7 days ({} days {} hours). Stopping.", days, hours);
-            println!("Loaded {} files with {} total rows\n", file_index + 1, total_rows);
+            let hours =
+                (total_duration_ns % (24 * 60 * 60 * 1_000_000_000)) / (60 * 60 * 1_000_000_000);
+            println!(
+                "Reached target duration of 7 days ({} days {} hours). Stopping.",
+                days, hours
+            );
+            println!(
+                "Loaded {} files with {} total rows\n",
+                file_index + 1,
+                total_rows
+            );
             break;
         }
     }
@@ -174,8 +195,13 @@ fn load_parquet_data() -> Option<Vec<(u64, RecordBatchRow)>> {
 
     // Check if the parquet data directory exists
     if !parquet_dir.exists() {
-        eprintln!("Error: Parquet data directory not found at {:?}", parquet_dir);
-        eprintln!("Please create benches/data/parquet and add parquet files before running benchmarks");
+        eprintln!(
+            "Error: Parquet data directory not found at {:?}",
+            parquet_dir
+        );
+        eprintln!(
+            "Please create benches/data/parquet and add parquet files before running benchmarks"
+        );
         return None;
     }
 
@@ -236,25 +262,24 @@ fn bench_build_cache(c: &mut Criterion) {
 
     for (name, resolution) in &resolutions {
         // Build cache once to get statistics
-        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-            sorted_data.clone(),
-            *resolution,
-        )
-        .unwrap();
+        let cache =
+            ValueAwareLapperCache::from_sorted_with_resolution(sorted_data.clone(), *resolution)
+                .unwrap();
 
         println!("\n=== {} Resolution ===", name);
         println!("  Intervals: {}", cache.interval_count());
-        println!("  Size: {:.2} MB", cache.size_bytes() as f64 / (1024.0 * 1024.0));
+        println!(
+            "  Size: {:.2} MB",
+            cache.size_bytes() as f64 / (1024.0 * 1024.0)
+        );
 
         group.bench_function(format!("{}_resolution", name), |b| {
             b.iter_batched(
                 || sorted_data.clone(),
                 |data| {
-                    let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-                        data,
-                        *resolution,
-                    )
-                    .unwrap();
+                    let cache =
+                        ValueAwareLapperCache::from_sorted_with_resolution(data, *resolution)
+                            .unwrap();
                     black_box(cache);
                 },
                 criterion::BatchSize::SmallInput,
@@ -303,11 +328,9 @@ fn bench_query_cache(c: &mut Criterion) {
 
     for (name, resolution) in &resolutions {
         // Build cache for this resolution
-        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-            sorted_data.clone(),
-            *resolution,
-        )
-        .unwrap();
+        let cache =
+            ValueAwareLapperCache::from_sorted_with_resolution(sorted_data.clone(), *resolution)
+                .unwrap();
 
         let n_queries = 100;
 
@@ -315,14 +338,19 @@ fn bench_query_cache(c: &mut Criterion) {
         println!("\n=== Query Stats for {} ===", name);
         println!("  min_ts: {}, max_ts: {}", original_min_ns, original_max_ns);
         println!("  range: {}", original_range_ns);
-        println!("  wall_clock_range_ns: {} ns (~{} seconds)", wall_clock_range_ns, wall_clock_range_ns / 1_000_000_000);
+        println!(
+            "  wall_clock_range_ns: {} ns (~{} seconds)",
+            wall_clock_range_ns,
+            wall_clock_range_ns / 1_000_000_000
+        );
         println!("  num intervals: {}", cache.interval_count());
 
         // Create test ranges distributed across the time span (in nanoseconds)
         // Each range covers the same wall-clock duration
         let test_ranges: Vec<std::ops::Range<u64>> = (0..n_queries)
             .map(|i| {
-                let start = original_min_ns + ((original_range_ns - wall_clock_range_ns) * i as u64) / (n_queries as u64);
+                let start = original_min_ns
+                    + ((original_range_ns - wall_clock_range_ns) * i as u64) / (n_queries as u64);
                 let end = start + wall_clock_range_ns;
                 start..end
             })
