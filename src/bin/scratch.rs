@@ -18,6 +18,7 @@ fn main() {
     // play_with_interavl_trees();
 }
 
+#[expect(dead_code)]
 fn play_with_interavl_trees() {
     let mut tree = interavl::IntervalTree::default();
 

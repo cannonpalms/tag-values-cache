@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, RecordBatchRow,
-    SegmentTreeCache, SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
+    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, RecordBatchRow, SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
     extract_rows_from_batch,
 };
 

@@ -141,7 +141,7 @@ where
 
             self.intervals
                 .entry(t)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((end, v));
         }
 
@@ -163,7 +163,7 @@ where
         size += self.intervals.len() * std::mem::size_of::<Timestamp>();
 
         // For each entry in the BTreeMap, we have a Vec
-        for (_, intervals_at_start) in &self.intervals {
+        for intervals_at_start in self.intervals.values() {
             // Vec overhead
             size += std::mem::size_of::<Vec<(Timestamp, V)>>();
 

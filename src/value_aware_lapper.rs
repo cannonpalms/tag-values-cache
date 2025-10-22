@@ -84,7 +84,7 @@ where
         use std::collections::VecDeque;
 
         // Extract all intervals from the lapper
-        let mut intervals: Vec<_> = self.lapper.iter().map(|iv| iv.clone()).collect();
+        let mut intervals: Vec<_> = self.lapper.iter().cloned().collect();
 
         if intervals.is_empty() {
             return;
