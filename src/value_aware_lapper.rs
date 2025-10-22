@@ -169,7 +169,12 @@ where
     /// * `start` - The start of the query range
     /// * `stop` - The end of the query range
     /// * `cursor` - A mutable cursor position for tracking iteration state
-    pub fn seek(&self, start: T, stop: T, cursor: &mut usize) -> impl Iterator<Item = &Interval<T, V>> {
+    pub fn seek(
+        &self,
+        start: T,
+        stop: T,
+        cursor: &mut usize,
+    ) -> impl Iterator<Item = &Interval<T, V>> {
         self.lapper.seek(start, stop, cursor)
     }
 
@@ -407,15 +412,21 @@ mod tests {
         let merged: Vec<_> = vlapper.iter().collect();
 
         // Check that we have the right intervals
-        assert!(merged.iter().any(|iv| iv.start == 5u32
-            && iv.stop == 20u32
-            && iv.val == "A"));
-        assert!(merged.iter().any(|iv| iv.start == 10u32
-            && iv.stop == 18u32
-            && iv.val == "B"));
-        assert!(merged.iter().any(|iv| iv.start == 25u32
-            && iv.stop == 30u32
-            && iv.val == "A"));
+        assert!(
+            merged
+                .iter()
+                .any(|iv| iv.start == 5u32 && iv.stop == 20u32 && iv.val == "A")
+        );
+        assert!(
+            merged
+                .iter()
+                .any(|iv| iv.start == 10u32 && iv.stop == 18u32 && iv.val == "B")
+        );
+        assert!(
+            merged
+                .iter()
+                .any(|iv| iv.start == 25u32 && iv.stop == 30u32 && iv.val == "A")
+        );
     }
 
     #[test]

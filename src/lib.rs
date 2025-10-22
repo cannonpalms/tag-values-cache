@@ -167,6 +167,15 @@ pub enum CacheBuildError {
     /// Occurs when trying to create an interval [t, t+1) where t == `u64::MAX`
     #[error("cannot create interval [t, t+1) because t == u64::MAX")]
     TimestampOverflow(u64),
+
+    /// Occurs when trying to append data with a different time resolution than the cache
+    #[error(
+        "resolution mismatch: cannot append data with resolution {append_resolution:?} to cache with resolution {cache_resolution:?}"
+    )]
+    ResolutionMismatch {
+        cache_resolution: std::time::Duration,
+        append_resolution: std::time::Duration,
+    },
 }
 
 /// Wrapper type that guarantees data is sorted by timestamp then value.

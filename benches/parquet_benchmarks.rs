@@ -2,6 +2,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 use tag_values_cache::{
     ArrowValue, RecordBatchRow, SortedData, ValueAwareLapperCache, IntervalCache,
 };
@@ -167,61 +168,6 @@ fn parse_parquet_row(record: &parquet::record::Row) -> Option<(u64, RecordBatchR
     timestamp.map(|ts| (ts, RecordBatchRow::new(values)))
 }
 
-/// Truncate timestamps to 5-second resolution
-fn truncate_to_5sec(data: Vec<(u64, RecordBatchRow)>) -> Vec<(u64, RecordBatchRow)> {
-    data.into_iter()
-        .map(|(ts, row)| {
-            let secs = ts / 1_000_000_000;
-            let bucket = secs / 5;
-            (bucket, row)
-        })
-        .collect()
-}
-
-/// Truncate timestamps to 15-second resolution
-fn truncate_to_15sec(data: Vec<(u64, RecordBatchRow)>) -> Vec<(u64, RecordBatchRow)> {
-    data.into_iter()
-        .map(|(ts, row)| {
-            let secs = ts / 1_000_000_000;
-            let bucket = secs / 15;
-            (bucket, row)
-        })
-        .collect()
-}
-
-/// Truncate timestamps to 1-minute resolution
-fn truncate_to_1min(data: Vec<(u64, RecordBatchRow)>) -> Vec<(u64, RecordBatchRow)> {
-    data.into_iter()
-        .map(|(ts, row)| {
-            let secs = ts / 1_000_000_000;
-            let bucket = secs / 60;
-            (bucket, row)
-        })
-        .collect()
-}
-
-/// Truncate timestamps to 3-minute resolution
-fn truncate_to_3min(data: Vec<(u64, RecordBatchRow)>) -> Vec<(u64, RecordBatchRow)> {
-    data.into_iter()
-        .map(|(ts, row)| {
-            let secs = ts / 1_000_000_000;
-            let bucket = secs / 180;
-            (bucket, row)
-        })
-        .collect()
-}
-
-/// Truncate timestamps to 5-minute resolution
-fn truncate_to_5min(data: Vec<(u64, RecordBatchRow)>) -> Vec<(u64, RecordBatchRow)> {
-    data.into_iter()
-        .map(|(ts, row)| {
-            let secs = ts / 1_000_000_000;
-            let bucket = secs / 300;
-            (bucket, row)
-        })
-        .collect()
-}
-
 /// Load the parquet data once and return it
 fn load_parquet_data() -> Option<Vec<(u64, RecordBatchRow)>> {
     let parquet_dir = std::path::PathBuf::from("benches/data/parquet");
@@ -276,138 +222,50 @@ fn bench_build_cache(c: &mut Criterion) {
     let mut group = c.benchmark_group("parquet_cache_build");
     group.throughput(Throughput::Elements(parsed_data.len() as u64));
 
-    // Test with nanosecond resolution (original)
-    let sorted_data_ns = SortedData::from_unsorted(parsed_data.clone());
+    // Test different resolutions
+    let resolutions = [
+        ("nanosecond", Duration::from_nanos(1)),
+        ("5second", Duration::from_secs(5)),
+        ("15second", Duration::from_secs(15)),
+        ("1minute", Duration::from_secs(60)),
+        ("3minute", Duration::from_secs(180)),
+        ("5minute", Duration::from_secs(300)),
+    ];
 
-    // Build cache once to get statistics
-    let cache_ns = ValueAwareLapperCache::from_sorted(sorted_data_ns.clone()).unwrap();
-    println!("\n=== Nanosecond Resolution ===");
-    println!("  Intervals: {}", cache_ns.interval_count());
-    println!("  Size: {:.2} MB", cache_ns.size_bytes() as f64 / (1024.0 * 1024.0));
+    let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
-    group.bench_function("nanosecond_resolution", |b| {
-        b.iter_batched(
-            || sorted_data_ns.clone(),
-            |data| {
-                let cache = ValueAwareLapperCache::from_sorted(data).unwrap();
-                black_box(cache);
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    drop(cache_ns);
-    drop(sorted_data_ns);
+    for (name, resolution) in &resolutions {
+        // Build cache once to get statistics
+        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
+            sorted_data.clone(),
+            *resolution,
+        )
+        .unwrap();
 
-    // Test with 5-second resolution
-    let data_5sec = truncate_to_5sec(parsed_data.clone());
-    let sorted_data_5sec = SortedData::from_unsorted(data_5sec);
+        println!("\n=== {} Resolution ===", name);
+        println!("  Intervals: {}", cache.interval_count());
+        println!("  Size: {:.2} MB", cache.size_bytes() as f64 / (1024.0 * 1024.0));
 
-    let cache_5sec = ValueAwareLapperCache::from_sorted(sorted_data_5sec.clone()).unwrap();
-    println!("\n=== 5-Second Resolution ===");
-    println!("  Intervals: {}", cache_5sec.interval_count());
-    println!("  Size: {:.2} MB", cache_5sec.size_bytes() as f64 / (1024.0 * 1024.0));
+        group.bench_function(format!("{}_resolution", name), |b| {
+            b.iter_batched(
+                || sorted_data.clone(),
+                |data| {
+                    let cache = ValueAwareLapperCache::from_sorted_with_resolution(
+                        data,
+                        *resolution,
+                    )
+                    .unwrap();
+                    black_box(cache);
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
 
-    group.bench_function("5second_resolution", |b| {
-        b.iter_batched(
-            || sorted_data_5sec.clone(),
-            |data| {
-                let cache = ValueAwareLapperCache::from_sorted(data).unwrap();
-                black_box(cache);
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    drop(cache_5sec);
-    drop(sorted_data_5sec);
+        drop(cache);
+    }
 
-    // Test with 15-second resolution
-    let data_15sec = truncate_to_15sec(parsed_data.clone());
-    let sorted_data_15sec = SortedData::from_unsorted(data_15sec);
-
-    let cache_15sec = ValueAwareLapperCache::from_sorted(sorted_data_15sec.clone()).unwrap();
-    println!("\n=== 15-Second Resolution ===");
-    println!("  Intervals: {}", cache_15sec.interval_count());
-    println!("  Size: {:.2} MB", cache_15sec.size_bytes() as f64 / (1024.0 * 1024.0));
-
-    group.bench_function("15second_resolution", |b| {
-        b.iter_batched(
-            || sorted_data_15sec.clone(),
-            |data| {
-                let cache = ValueAwareLapperCache::from_sorted(data).unwrap();
-                black_box(cache);
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    drop(cache_15sec);
-    drop(sorted_data_15sec);
-
-    // Test with 1-minute resolution
-    let data_1min = truncate_to_1min(parsed_data.clone());
-    let sorted_data_1min = SortedData::from_unsorted(data_1min);
-
-    let cache_1min = ValueAwareLapperCache::from_sorted(sorted_data_1min.clone()).unwrap();
-    println!("\n=== 1-Minute Resolution ===");
-    println!("  Intervals: {}", cache_1min.interval_count());
-    println!("  Size: {:.2} MB", cache_1min.size_bytes() as f64 / (1024.0 * 1024.0));
-
-    group.bench_function("1minute_resolution", |b| {
-        b.iter_batched(
-            || sorted_data_1min.clone(),
-            |data| {
-                let cache = ValueAwareLapperCache::from_sorted(data).unwrap();
-                black_box(cache);
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    drop(cache_1min);
-    drop(sorted_data_1min);
-
-    // Test with 3-minute resolution
-    let data_3min = truncate_to_3min(parsed_data.clone());
-    let sorted_data_3min = SortedData::from_unsorted(data_3min);
-
-    let cache_3min = ValueAwareLapperCache::from_sorted(sorted_data_3min.clone()).unwrap();
-    println!("\n=== 3-Minute Resolution ===");
-    println!("  Intervals: {}", cache_3min.interval_count());
-    println!("  Size: {:.2} MB", cache_3min.size_bytes() as f64 / (1024.0 * 1024.0));
-
-    group.bench_function("3minute_resolution", |b| {
-        b.iter_batched(
-            || sorted_data_3min.clone(),
-            |data| {
-                let cache = ValueAwareLapperCache::from_sorted(data).unwrap();
-                black_box(cache);
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    drop(cache_3min);
-    drop(sorted_data_3min);
-
-    // Test with 5-minute resolution
-    let data_5min = truncate_to_5min(parsed_data.clone());
-    let sorted_data_5min = SortedData::from_unsorted(data_5min);
-
-    let cache_5min = ValueAwareLapperCache::from_sorted(sorted_data_5min.clone()).unwrap();
-    println!("\n=== 5-Minute Resolution ===");
-    println!("  Intervals: {}", cache_5min.interval_count());
-    println!("  Size: {:.2} MB", cache_5min.size_bytes() as f64 / (1024.0 * 1024.0));
-
-    group.bench_function("5minute_resolution", |b| {
-        b.iter_batched(
-            || sorted_data_5min.clone(),
-            |data| {
-                let cache = ValueAwareLapperCache::from_sorted(data).unwrap();
-                black_box(cache);
-            },
-            criterion::BatchSize::SmallInput,
-        );
-    });
-    drop(cache_5min);
-    drop(sorted_data_5min);
-    drop(parsed_data); // Drop the original data after all build benchmarks are done
+    drop(sorted_data);
+    drop(parsed_data);
 
     group.finish();
 }
@@ -432,63 +290,40 @@ fn bench_query_cache(c: &mut Criterion) {
     let mut group = c.benchmark_group("parquet_cache_query");
 
     // Test queries with different timestamp resolutions
-    for resolution in ["nanosecond", "5second", "15second", "1minute", "3minute", "5minute"] {
-        let (data, timestamps, bucket_size_ns) = match resolution {
-            "nanosecond" => (parsed_data.clone(), parsed_data.iter().map(|(ts, _)| *ts).collect(), 1u64),
-            "5second" => {
-                let data = truncate_to_5sec(parsed_data.clone());
-                let ts: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
-                (data, ts, 5_000_000_000u64)
-            },
-            "15second" => {
-                let data = truncate_to_15sec(parsed_data.clone());
-                let ts: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
-                (data, ts, 15_000_000_000u64)
-            },
-            "1minute" => {
-                let data = truncate_to_1min(parsed_data.clone());
-                let ts: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
-                (data, ts, 60_000_000_000u64)
-            },
-            "3minute" => {
-                let data = truncate_to_3min(parsed_data.clone());
-                let ts: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
-                (data, ts, 180_000_000_000u64)
-            },
-            "5minute" => {
-                let data = truncate_to_5min(parsed_data.clone());
-                let ts: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
-                (data, ts, 300_000_000_000u64)
-            },
-            _ => unreachable!(),
-        };
+    let resolutions = [
+        ("nanosecond", Duration::from_nanos(1)),
+        ("5second", Duration::from_secs(5)),
+        ("15second", Duration::from_secs(15)),
+        ("1minute", Duration::from_secs(60)),
+        ("3minute", Duration::from_secs(180)),
+        ("5minute", Duration::from_secs(300)),
+    ];
 
-        // Get min/max from the actual timestamps for this resolution
-        let min_ts = *timestamps.iter().min().unwrap();
-        let max_ts = *timestamps.iter().max().unwrap();
+    let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
+    for (name, resolution) in &resolutions {
         // Build cache for this resolution
-        let sorted_data = SortedData::from_unsorted(data);
-        let cache = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
+        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
+            sorted_data.clone(),
+            *resolution,
+        )
+        .unwrap();
 
-        // Convert wall-clock duration to buckets for this resolution
-        let range_size_buckets = wall_clock_range_ns / bucket_size_ns;
         let n_queries = 100;
 
         // Debug: print query statistics
-        println!("\n=== Query Stats for {} ===", resolution);
-        println!("  min_ts: {}, max_ts: {}", min_ts, max_ts);
-        println!("  range: {}", max_ts - min_ts);
+        println!("\n=== Query Stats for {} ===", name);
+        println!("  min_ts: {}, max_ts: {}", original_min_ns, original_max_ns);
+        println!("  range: {}", original_range_ns);
         println!("  wall_clock_range_ns: {} ns (~{} seconds)", wall_clock_range_ns, wall_clock_range_ns / 1_000_000_000);
-        println!("  range_size (buckets): {}", range_size_buckets);
         println!("  num intervals: {}", cache.interval_count());
 
-        // Create test ranges distributed across the time span (using resolution-specific timestamps)
+        // Create test ranges distributed across the time span (in nanoseconds)
         // Each range covers the same wall-clock duration
         let test_ranges: Vec<std::ops::Range<u64>> = (0..n_queries)
             .map(|i| {
-                let start = min_ts + ((max_ts - min_ts - range_size_buckets) * i as u64) / (n_queries as u64);
-                let end = start + range_size_buckets;
+                let start = original_min_ns + ((original_range_ns - wall_clock_range_ns) * i as u64) / (n_queries as u64);
+                let end = start + wall_clock_range_ns;
                 start..end
             })
             .collect();
@@ -500,7 +335,7 @@ fn bench_query_cache(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n_queries as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("range_10pct", resolution),
+            BenchmarkId::new("range_10pct", name),
             &(&cache, &test_ranges),
             |b, (cache, ranges)| {
                 b.iter(|| {
@@ -511,12 +346,11 @@ fn bench_query_cache(c: &mut Criterion) {
             },
         );
 
-        // Drop data structures after benchmarking this resolution
         drop(cache);
         drop(test_ranges);
-        drop(timestamps);
     }
 
+    drop(sorted_data);
     drop(parsed_data);
     group.finish();
 }
@@ -534,29 +368,37 @@ fn bench_append_cache(c: &mut Criterion) {
     // Split data for initial build and append
     let split_point = parsed_data.len() / 2;
 
-    // Test append for different timestamp resolutions
-    for resolution in ["nanosecond", "5second", "15second", "1minute", "3minute", "5minute"] {
-        let data = match resolution {
-            "nanosecond" => parsed_data.clone(),
-            "5second" => truncate_to_5sec(parsed_data.clone()),
-            "15second" => truncate_to_15sec(parsed_data.clone()),
-            "1minute" => truncate_to_1min(parsed_data.clone()),
-            "3minute" => truncate_to_3min(parsed_data.clone()),
-            "5minute" => truncate_to_5min(parsed_data.clone()),
-            _ => unreachable!(),
-        };
+    let resolutions = [
+        ("nanosecond", Duration::from_nanos(1)),
+        ("5second", Duration::from_secs(5)),
+        ("15second", Duration::from_secs(15)),
+        ("1minute", Duration::from_secs(60)),
+        ("3minute", Duration::from_secs(180)),
+        ("5minute", Duration::from_secs(300)),
+    ];
 
-        let initial_data = data[..split_point].to_vec();
-        let append_data = data[split_point..].to_vec();
+    // Test append for different timestamp resolutions
+    for (name, resolution) in &resolutions {
+        let initial_data = parsed_data[..split_point].to_vec();
+        let append_data = parsed_data[split_point..].to_vec();
 
         let sorted_initial = SortedData::from_unsorted(initial_data);
         let sorted_append = SortedData::from_unsorted(append_data.clone());
 
         group.throughput(Throughput::Elements(append_data.len() as u64));
 
-        group.bench_function(format!("append_50pct_{}", resolution), |b| {
+        group.bench_function(format!("append_50pct_{}", name), |b| {
             b.iter_batched(
-                || (ValueAwareLapperCache::from_sorted(sorted_initial.clone()).unwrap(), sorted_append.clone()),
+                || {
+                    (
+                        ValueAwareLapperCache::from_sorted_with_resolution(
+                            sorted_initial.clone(),
+                            *resolution,
+                        )
+                        .unwrap(),
+                        sorted_append.clone(),
+                    )
+                },
                 |(mut cache, data)| {
                     cache.append_sorted(data).unwrap();
                     black_box(cache);
@@ -565,7 +407,6 @@ fn bench_append_cache(c: &mut Criterion) {
             );
         });
 
-        // Drop data structures after benchmarking this resolution
         drop(sorted_initial);
         drop(sorted_append);
     }
