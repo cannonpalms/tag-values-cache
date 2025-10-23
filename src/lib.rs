@@ -19,7 +19,7 @@
 //! let values = cache.query_point(2);  // Returns ["A"]
 //! ```
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::ops::Range;
 use std::rc::Rc;
@@ -52,6 +52,14 @@ pub use vec_cache::VecCache;
 
 /// The type used for timestamps (nanoseconds since epoch)
 pub type Timestamp = u64;
+
+/// A set of tag name-value pairs for direct string handling.
+///
+/// This type uses BTreeSet to provide:
+/// - Deterministic ordering for consistent iteration
+/// - Value-based equality (two TagSets with same elements are equal)
+/// - Efficient comparison and merging operations
+pub type TagSet = BTreeSet<(String, String)>;
 
 /// Trait for types that can estimate their heap-allocated memory size.
 ///
@@ -753,6 +761,141 @@ pub fn record_batches_to_row_data(
     for batch in batches {
         let batch = batch?;
         let points = extract_rows_from_batch(&batch);
+        all_points.extend(points);
+    }
+
+    Ok(SortedData::from_unsorted(all_points))
+}
+
+/// Extract tag data from a RecordBatch as TagSet values.
+///
+/// This function extracts timestamp and tag columns from an Arrow RecordBatch,
+/// converting each row into a TagSet (set of (tag_name, tag_value) tuples).
+///
+/// # Arguments
+/// * `batch` - The RecordBatch to extract data from
+///
+/// # Returns
+/// A vector of (timestamp, TagSet) pairs
+pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> {
+    let schema = batch.schema_ref();
+
+    // Find the timestamp column and tag columns
+    let mut ts_idx = None;
+    let mut tag_columns = Vec::new();
+
+    for (idx, field) in schema.fields().iter().enumerate() {
+        if let Some(column_type) = field.metadata().get("iox::column::type") {
+            if column_type == "iox::column_type::timestamp" {
+                ts_idx = Some(idx);
+            } else {
+                // Only include Utf8 columns (tags)
+                match field.data_type() {
+                    DataType::Utf8 | DataType::Dictionary(_, _) => {
+                        tag_columns.push((idx, field.name().clone()));
+                    }
+                    _ => {} // Skip non-string columns
+                }
+            }
+        } else {
+            // If no metadata, check field name for time column
+            let name_lower = field.name().to_lowercase();
+            if name_lower == "time"
+                || name_lower == "timestamp"
+                || name_lower == "_time"
+                || name_lower == "eventtime"
+            {
+                ts_idx = Some(idx);
+            } else {
+                // Only include Utf8 columns (tags)
+                match field.data_type() {
+                    DataType::Utf8 | DataType::Dictionary(_, _) => {
+                        tag_columns.push((idx, field.name().clone()));
+                    }
+                    _ => {} // Skip non-string columns
+                }
+            }
+        }
+    }
+
+    // panic if no timestamp found
+    let ts_idx = ts_idx.expect("No timestamp column found in RecordBatch");
+
+    // Get the timestamp column
+    let ts_column = batch.column(ts_idx);
+    let timestamps_vec: Vec<Timestamp> = match ts_column.data_type() {
+        DataType::Int64 => as_primitive_array::<arrow::datatypes::Int64Type>(ts_column)
+            .values()
+            .iter()
+            .map(|v| *v as u64)
+            .collect(),
+        DataType::Timestamp(_, _) => as_primitive_array::<TimestampNanosecondType>(ts_column)
+            .values()
+            .iter()
+            .map(|v| *v as u64)
+            .collect(),
+        dt => panic!("Unexpected data type for timestamp column: {dt:?}"),
+    };
+
+    // Build results
+    let mut results = Vec::with_capacity(batch.num_rows());
+
+    for (row_idx, ts) in timestamps_vec.iter().enumerate().take(batch.num_rows()) {
+        // Collect all tag column values for this row as (name, value) pairs
+        let mut tag_set = TagSet::new();
+
+        for &(col_idx, ref col_name) in &tag_columns {
+            let array = batch.column(col_idx);
+
+            // Extract value from Utf8 or Dictionary columns only
+            let value = if array.is_valid(row_idx) {
+                match array.data_type() {
+                    DataType::Utf8 => array
+                        .as_any()
+                        .downcast_ref::<StringArray>()
+                        .map_or("string_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
+                        }),
+                    DataType::Dictionary(_, _) => {
+                        // Handle dictionary encoded columns (like tags)
+                        let dict_array = as_dictionary_array::<Int32Type>(array);
+                        if let Some(key) = dict_array.key(row_idx) {
+                            let values = as_string_array(dict_array.values());
+                            values.value(key).to_string()
+                        } else {
+                            "null".to_string()
+                        }
+                    }
+                    dt => {
+                        // This shouldn't happen since we filter for Utf8/Dictionary columns
+                        panic!("Unexpected data type in tag columns: {dt:?}")
+                    }
+                }
+            } else {
+                "null".to_string()
+            };
+
+            tag_set.insert((col_name.clone(), value));
+        }
+
+        results.push((*ts, tag_set));
+    }
+
+    results
+}
+
+/// Process multiple RecordBatches into sorted TagSet data.
+///
+/// This function processes all batches and returns them as `SortedData`
+/// ready for cache construction with TagSet values.
+pub fn record_batches_to_tag_data(
+    batches: impl Iterator<Item = Result<RecordBatch, arrow::error::ArrowError>>,
+) -> Result<SortedData<TagSet>, Box<dyn std::error::Error>> {
+    let mut all_points = Vec::new();
+
+    for batch in batches {
+        let batch = batch?;
+        let points = extract_tags_from_batch(&batch);
         all_points.extend(points);
     }
 

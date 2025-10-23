@@ -166,7 +166,7 @@ fn bench_build(c: &mut Criterion) {
             bench_cache_build!(LapperCache<RecordBatchRow>, "LapperCache");
 
             // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_build!(ValueAwareLapperCache, "ValueAwareLapperCache");
+            bench_cache_build!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
 
             bench_cache_build!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_build!(NCListCache<RecordBatchRow>, "NCListCache");
@@ -231,7 +231,7 @@ fn bench_append(c: &mut Criterion) {
             bench_cache_append!(LapperCache<RecordBatchRow>, "LapperCache");
 
             // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_append!(ValueAwareLapperCache, "ValueAwareLapperCache");
+            bench_cache_append!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
 
             bench_cache_append!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_append!(NCListCache<RecordBatchRow>, "NCListCache");
@@ -315,7 +315,7 @@ fn bench_point_queries(c: &mut Criterion) {
             bench_cache_hits_misses!(LapperCache<RecordBatchRow>, "LapperCache");
 
             // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_hits_misses!(ValueAwareLapperCache, "ValueAwareLapperCache");
+            bench_cache_hits_misses!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
 
             bench_cache_hits_misses!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_hits_misses!(NCListCache<RecordBatchRow>, "NCListCache");
@@ -391,7 +391,7 @@ fn bench_range_queries(c: &mut Criterion) {
             bench_cache_range!(LapperCache<RecordBatchRow>, "LapperCache");
 
             // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_range!(ValueAwareLapperCache, "ValueAwareLapperCache");
+            bench_cache_range!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
 
             bench_cache_range!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_range!(NCListCache<RecordBatchRow>, "NCListCache");

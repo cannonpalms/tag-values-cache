@@ -5,36 +5,40 @@
 //! AND values match.
 
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::ops::Range;
-use std::sync::Arc;
 use std::time::Duration;
 
-use indexmap::IndexSet;
 use rust_lapper::Interval;
 
 use crate::{
-    CacheBuildError, HeapSize, IntervalCache, RecordBatchRow, SortedData, Timestamp,
+    CacheBuildError, IntervalCache, SortedData, Timestamp,
     value_aware_lapper::ValueAwareLapper,
 };
 
-/// An interval cache implementation using ValueAwareLapper with dictionary encoding.
+/// An interval cache implementation using ValueAwareLapper for value-aware merging.
 ///
-/// This cache uses Arc for RecordBatchRow deduplication internally, ensuring each unique
-/// RecordBatchRow is only stored once in memory. Uses IndexSet to maintain insertion order
-/// and provide O(1) lookups without redundant storage.
-pub struct ValueAwareLapperCache {
-    /// The ValueAwareLapper instance containing all intervals with interned RecordBatchRows
-    value_lapper: ValueAwareLapper<u64, Arc<RecordBatchRow>>,
-
-    /// Deduplicated RecordBatchRows with stable indexing via insertion order
-    unique_rows: IndexSet<Arc<RecordBatchRow>>,
+/// This cache is generic over the value type `V`, which must be cloneable and comparable.
+/// Values are stored directly in the intervals without any Arc wrapping or deduplication.
+///
+/// # Type Parameters
+/// * `V` - The value type stored in intervals (e.g., `RecordBatchRow`, `TagSet`)
+pub struct ValueAwareLapperCache<V>
+where
+    V: Clone + Eq + Ord + Hash + Send + Sync,
+{
+    /// The ValueAwareLapper instance containing all intervals
+    value_lapper: ValueAwareLapper<u64, V>,
 
     /// Time resolution for bucketing timestamps
     /// Duration::from_nanos(1) = nanosecond resolution (no bucketing)
     resolution: Duration,
 }
 
-impl ValueAwareLapperCache {
+impl<V> ValueAwareLapperCache<V>
+where
+    V: Clone + Eq + Ord + Hash + Send + Sync,
+{
     /// Bucket a timestamp according to the specified resolution.
     ///
     /// For nanosecond resolution (Duration::from_nanos(1) or less), returns the timestamp unchanged.
@@ -49,34 +53,14 @@ impl ValueAwareLapperCache {
         }
     }
 
-    /// Intern a RecordBatchRow, ensuring only one copy exists in memory.
-    ///
-    /// Returns the Arc from the IndexSet, either existing or newly inserted.
-    fn intern_row(
-        unique_rows: &mut IndexSet<Arc<RecordBatchRow>>,
-        row: RecordBatchRow,
-    ) -> Arc<RecordBatchRow> {
-        let arc_row = Arc::new(row);
-
-        // Check if it already exists and return the existing Arc
-        if let Some(existing) = unique_rows.get(&arc_row) {
-            existing.clone()
-        } else {
-            // Insert and return the new Arc
-            unique_rows.insert(arc_row.clone());
-            arc_row
-        }
-    }
-
     /// Build intervals from sorted timestamp-value pairs with optional bucketing.
     ///
     /// Consecutive timestamps with the same value are merged into continuous intervals.
     /// If resolution is provided, timestamps are bucketed before building intervals.
     fn build_intervals(
-        points: Vec<(Timestamp, RecordBatchRow)>,
+        points: Vec<(Timestamp, V)>,
         resolution: Duration,
-        unique_rows: &mut IndexSet<Arc<RecordBatchRow>>,
-    ) -> Result<Vec<Interval<u64, Arc<RecordBatchRow>>>, CacheBuildError> {
+    ) -> Result<Vec<Interval<u64, V>>, CacheBuildError> {
         let mut intervals = Vec::new();
 
         if points.is_empty() {
@@ -85,7 +69,7 @@ impl ValueAwareLapperCache {
 
         // Build intervals by merging consecutive identical values
         // Track open intervals for each value to handle overlapping
-        let mut open_intervals: std::collections::HashMap<Arc<RecordBatchRow>, (u64, u64)> =
+        let mut open_intervals: std::collections::HashMap<V, (u64, u64)> =
             std::collections::HashMap::new();
 
         for (t, v) in points {
@@ -96,10 +80,7 @@ impl ValueAwareLapperCache {
                 .checked_add(1)
                 .ok_or(CacheBuildError::TimestampOverflow(bucketed_t))?;
 
-            // Intern the row to ensure deduplication
-            let interned = Self::intern_row(unique_rows, v);
-
-            match open_intervals.get_mut(&interned) {
+            match open_intervals.get_mut(&v) {
                 Some((_, end)) if *end == bucketed_t => {
                     // Extend existing interval
                     *end = next_end;
@@ -109,7 +90,7 @@ impl ValueAwareLapperCache {
                     intervals.push(Interval {
                         start: *start,
                         stop: *end,
-                        val: interned.clone(),
+                        val: v.clone(),
                     });
 
                     *start = bucketed_t;
@@ -117,7 +98,7 @@ impl ValueAwareLapperCache {
                 }
                 None => {
                     // New value - start tracking it
-                    open_intervals.insert(interned.clone(), (bucketed_t, next_end));
+                    open_intervals.insert(v.clone(), (bucketed_t, next_end));
                 }
             }
         }
@@ -142,47 +123,45 @@ impl ValueAwareLapperCache {
     /// * `sorted_data` - Pre-sorted data wrapped in `SortedData` type
     /// * `resolution` - Time bucket size (e.g., `Duration::from_secs(5)` for 5-second buckets)
     pub fn from_sorted_with_resolution(
-        sorted_data: SortedData<RecordBatchRow>,
+        sorted_data: SortedData<V>,
         resolution: Duration,
     ) -> Result<Self, CacheBuildError> {
-        let mut unique_rows = IndexSet::new();
         let points = sorted_data.into_inner();
-        let intervals = Self::build_intervals(points, resolution, &mut unique_rows)?;
+        let intervals = Self::build_intervals(points, resolution)?;
 
         let mut value_lapper = ValueAwareLapper::new(intervals);
         value_lapper.merge_with_values();
 
         Ok(Self {
             value_lapper,
-            unique_rows,
             resolution,
         })
     }
 }
 
-impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
-    fn from_sorted(sorted_data: SortedData<RecordBatchRow>) -> Result<Self, CacheBuildError> {
+impl<V> IntervalCache<V> for ValueAwareLapperCache<V>
+where
+    V: Clone + Eq + Ord + Hash + Send + Sync,
+{
+    fn from_sorted(sorted_data: SortedData<V>) -> Result<Self, CacheBuildError> {
         // Default to nanosecond resolution for backward compatibility
         Self::from_sorted_with_resolution(sorted_data, Duration::from_nanos(1))
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&RecordBatchRow> {
+    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
         // Bucket the query timestamp to match the cache resolution
         let bucketed_t = Self::bucket_timestamp(t, self.resolution);
         let start = bucketed_t;
         let stop = bucketed_t + 1;
 
-        // Find matching intervals and get RecordBatchRow references from IndexSet
+        // Find matching intervals and get value references
         self.value_lapper
             .find(start, stop)
-            .filter_map(|interval| {
-                // IndexSet allows us to get a reference to the Arc's inner value
-                self.unique_rows.get(&interval.val).map(|arc| arc.as_ref())
-            })
+            .map(|interval| &interval.val)
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&RecordBatchRow> {
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
         // Bucket the query range to match the cache resolution
         let bucketed_start = Self::bucket_timestamp(range.start, self.resolution);
         // For the end, we need to ensure we don't miss data by rounding down
@@ -203,18 +182,15 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
 
         self.value_lapper
             .find(bucketed_start, query_end)
-            .filter_map(|interval| {
-                self.unique_rows.get(&interval.val).map(|arc| arc.as_ref())
-            })
+            .map(|interval| &interval.val)
             .collect()
     }
 
-    fn append_sorted(&mut self, sorted_data: SortedData<RecordBatchRow>) -> Result<(), CacheBuildError> {
+    fn append_sorted(&mut self, sorted_data: SortedData<V>) -> Result<(), CacheBuildError> {
         // Build new intervals from sorted points using the cache's resolution
         let new_intervals = Self::build_intervals(
             sorted_data.into_inner(),
             self.resolution,
-            &mut self.unique_rows,
         )?;
 
         // Collect all existing intervals
@@ -233,14 +209,10 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
         let mut size = std::mem::size_of::<Self>();
 
         // Size of all intervals in the ValueAwareLapper
-        size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, Arc<RecordBatchRow>>>();
+        size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, V>>();
 
-        // Add heap size for unique rows in IndexSet
-        // IndexSet stores both keys and an index map internally
-        size += self.unique_rows.capacity() * std::mem::size_of::<Arc<RecordBatchRow>>();
-        for arc_row in &self.unique_rows {
-            size += arc_row.heap_size();
-        }
+        // Note: This doesn't account for heap allocations within V
+        // For types like RecordBatchRow or TagSet, additional heap size calculation would be needed
 
         size
     }
@@ -253,6 +225,7 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RecordBatchRow;
     use std::collections::BTreeMap;
 
     #[test]

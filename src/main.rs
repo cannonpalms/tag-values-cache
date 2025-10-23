@@ -282,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Benchmark ValueAwareLapperCache
     println!("Building ValueAwareLapperCache...");
     let start = Instant::now();
-    let mut value_aware_lapper_cache = ValueAwareLapperCache::from_sorted(sorted_data1.clone())?;
+    let mut value_aware_lapper_cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted(sorted_data1.clone())?;
     let value_lapper_build_time = start.elapsed();
     println!(
         "  ValueAwareLapperCache: {}",
