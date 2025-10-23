@@ -6,7 +6,7 @@ use std::io::{BufReader, BufRead};
 use std::path::Path;
 use std::time::Duration;
 use tag_values_cache::{
-    ArrowValue, RecordBatchRow, SortedData, ValueAwareLapperCache, IntervalCache,
+    RecordBatchRow, SortedData, ValueAwareLapperCache, IntervalCache,
 };
 
 /// Parse a single line of line protocol format.
@@ -32,7 +32,7 @@ fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
     // Add measurement as a special tag
     values.insert(
         "_measurement".to_string(),
-        ArrowValue::String(measurement.to_string()),
+        measurement.to_string(),
     );
 
     // Parse tags - only keep specific tags we're interested in
@@ -40,7 +40,9 @@ fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
         "kubernetes_namespace",
         "host",
         "job",
-        "applicationId"
+        "applicationId",
+        "pod",
+        "instance"
     ];
 
     for tag_part in tag_parts {
@@ -49,31 +51,29 @@ fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
             if allowed_tags.contains(&key) {
                 values.insert(
                     key.to_string(),
-                    ArrowValue::String(value.to_string()),
+                    value.to_string(),
                 );
             }
         }
     }
 
-    // Parse fields (middle part) - we'll include these as well for completeness
+    // Parse fields (middle part) - convert all to strings for tags
     let fields = parts[1];
     for field_part in fields.split(',') {
         if let Some((key, value_str)) = field_part.split_once('=') {
-            // Try to parse as different types
-            let arrow_value = if value_str == "true" || value_str == "false" {
-                ArrowValue::Boolean(value_str == "true")
-            } else if let Ok(i) = value_str.trim_end_matches('i').parse::<i64>() {
-                ArrowValue::Int64(i)
-            } else if let Ok(f) = value_str.parse::<f64>() {
-                ArrowValue::Float64(f)
-            } else if value_str.starts_with('"') && value_str.ends_with('"') {
-                // String value
-                ArrowValue::String(value_str[1..value_str.len()-1].to_string())
+            // Convert field values to strings
+            let string_value = if value_str.starts_with('"') && value_str.ends_with('"') {
+                // String value - remove quotes
+                value_str[1..value_str.len()-1].to_string()
+            } else if value_str.ends_with('i') {
+                // Integer value - remove 'i' suffix
+                value_str.trim_end_matches('i').to_string()
             } else {
-                ArrowValue::String(value_str.to_string())
+                // Boolean, float, or other - use as is
+                value_str.to_string()
             };
 
-            values.insert(format!("_field_{}", key), arrow_value);
+            values.insert(format!("_field_{}", key), string_value);
         }
     }
 
@@ -219,6 +219,7 @@ fn bench_build_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
+    // ValueAwareLapperCache now works with RecordBatchRow
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
@@ -286,6 +287,7 @@ fn bench_query_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
+    // ValueAwareLapperCache now works with RecordBatchRow
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
@@ -369,6 +371,7 @@ fn bench_append_cache(c: &mut Criterion) {
         let initial_data = parsed_data[..split_point].to_vec();
         let append_data = parsed_data[split_point..].to_vec();
 
+        // ValueAwareLapperCache now works with RecordBatchRow
         let sorted_initial = SortedData::from_unsorted(initial_data);
         let sorted_append = SortedData::from_unsorted(append_data.clone());
 

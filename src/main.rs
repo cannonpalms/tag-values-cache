@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, RecordBatchRow, SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
-    extract_rows_from_batch,
+    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, RecordBatchRow,
+    SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_rows_from_batch,
 };
 
 fn print_usage() {
@@ -829,6 +829,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // let segment_tree_result = segment_tree_cache.query_point(t);
         let unmerged_btree_result = unmerged_btree_cache.query_point(t);
 
+        // All caches now return HashSet<&RecordBatchRow>, so comparison works directly
+
         if tree_result != vec_result
             || tree_result != lapper_result
             || tree_result != value_lapper_result
@@ -888,6 +890,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!();
                 }
             }
+
             all_match = false;
         }
     }
@@ -902,6 +905,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let nclist_result = nclist_cache.query_range(range.clone());
         // let segment_tree_result = segment_tree_cache.query_range(range.clone());
         let unmerged_btree_result = unmerged_btree_cache.query_range(range.clone());
+
+        // All caches now return HashSet<&RecordBatchRow>, so comparison works directly
 
         if tree_result != vec_result
             || tree_result != lapper_result
@@ -961,6 +966,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!();
                 }
             }
+
             all_match = false;
         }
     }

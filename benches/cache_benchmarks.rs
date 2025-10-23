@@ -1,7 +1,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::collections::BTreeMap;
 use tag_values_cache::{
-    ArrowValue, BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache,
+    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache,
     RecordBatchRow, SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
 };
 
@@ -86,29 +86,29 @@ fn generate_data_with_lfsr(
 
         values.insert(
             "WithHash".to_string(),
-            ArrowValue::String(generate_value(combo_idx % values_per_column, value_size)),
+            generate_value(combo_idx % values_per_column, value_size),
         );
         values.insert(
             "CounterID".to_string(),
-            ArrowValue::String(generate_value(
+            generate_value(
                 (combo_idx / values_per_column) % values_per_column,
                 value_size,
-            )),
+            ),
         );
         values.insert(
             "CookieEnable".to_string(),
-            ArrowValue::String(generate_value(
+            generate_value(
                 (combo_idx / (values_per_column * values_per_column)) % values_per_column,
                 value_size,
-            )),
+            ),
         );
         values.insert(
             "URLHash".to_string(),
-            ArrowValue::String(generate_value(
+            generate_value(
                 (combo_idx / (values_per_column * values_per_column * values_per_column))
                     % values_per_column,
                 value_size,
-            )),
+            ),
         );
 
         data.push((timestamp, RecordBatchRow::new(values)));
@@ -164,10 +164,10 @@ fn bench_build(c: &mut Criterion) {
             bench_cache_build!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_build!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_build!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_build!(
-                ValueAwareLapperCache<RecordBatchRow>,
-                "ValueAwareLapperCache"
-            );
+
+            // ValueAwareLapperCache now works with RecordBatchRow
+            bench_cache_build!(ValueAwareLapperCache, "ValueAwareLapperCache");
+
             bench_cache_build!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_build!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_build!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
@@ -229,10 +229,10 @@ fn bench_append(c: &mut Criterion) {
             bench_cache_append!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_append!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_append!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_append!(
-                ValueAwareLapperCache<RecordBatchRow>,
-                "ValueAwareLapperCache"
-            );
+
+            // ValueAwareLapperCache now works with RecordBatchRow
+            bench_cache_append!(ValueAwareLapperCache, "ValueAwareLapperCache");
+
             bench_cache_append!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_append!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_append!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
@@ -313,10 +313,10 @@ fn bench_point_queries(c: &mut Criterion) {
             bench_cache_hits_misses!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_hits_misses!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_hits_misses!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_hits_misses!(
-                ValueAwareLapperCache<RecordBatchRow>,
-                "ValueAwareLapperCache"
-            );
+
+            // ValueAwareLapperCache now works with RecordBatchRow
+            bench_cache_hits_misses!(ValueAwareLapperCache, "ValueAwareLapperCache");
+
             bench_cache_hits_misses!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_hits_misses!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_hits_misses!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
@@ -389,10 +389,10 @@ fn bench_range_queries(c: &mut Criterion) {
             bench_cache_range!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
             bench_cache_range!(VecCache<RecordBatchRow>, "VecCache");
             bench_cache_range!(LapperCache<RecordBatchRow>, "LapperCache");
-            bench_cache_range!(
-                ValueAwareLapperCache<RecordBatchRow>,
-                "ValueAwareLapperCache"
-            );
+
+            // ValueAwareLapperCache now works with RecordBatchRow
+            bench_cache_range!(ValueAwareLapperCache, "ValueAwareLapperCache");
+
             bench_cache_range!(BTreeCache<RecordBatchRow>, "BTreeCache");
             bench_cache_range!(NCListCache<RecordBatchRow>, "NCListCache");
             bench_cache_range!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");

@@ -6,7 +6,7 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 use tag_values_cache::{
-    ArrowValue, IntervalCache, RecordBatchRow, SortedData, ValueAwareLapperCache,
+    IntervalCache, RecordBatchRow, SortedData, ValueAwareLapperCache,
 };
 
 use std::collections::HashSet;
@@ -179,7 +179,7 @@ fn parse_parquet_row(record: &parquet::record::Row) -> Option<(u64, RecordBatchR
             // Only process string fields as tags (ignore numeric/boolean fields)
             _ => {
                 if let parquet::record::Field::Str(s) = field {
-                    values.insert(name.clone(), ArrowValue::String(s.to_string()));
+                    values.insert(name.clone(), s.to_string());
                 }
                 // All other field types (numeric, boolean, etc.) are ignored
             }
@@ -258,6 +258,8 @@ fn bench_build_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
+    // Convert RecordBatchRow to String for ValueAwareLapperCache
+    // ValueAwareLapperCache now works with RecordBatchRow
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
@@ -324,6 +326,8 @@ fn bench_query_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
+    // Convert RecordBatchRow to String for ValueAwareLapperCache
+    // ValueAwareLapperCache now works with RecordBatchRow
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
@@ -410,6 +414,7 @@ fn bench_append_cache(c: &mut Criterion) {
         let initial_data = parsed_data[..split_point].to_vec();
         let append_data = parsed_data[split_point..].to_vec();
 
+        // ValueAwareLapperCache now works with RecordBatchRow
         let sorted_initial = SortedData::from_unsorted(initial_data);
         let sorted_append = SortedData::from_unsorted(append_data.clone());
 

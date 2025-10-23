@@ -46,7 +46,7 @@ pub use lapper_cache::LapperCache;
 pub use nclist_cache::NCListCache;
 pub use segment_tree_cache::SegmentTreeCache;
 pub use unmerged_btree_cache::UnmergedBTreeCache;
-pub use value_aware_lapper::ValueAwareLapper;
+pub use value_aware_lapper::{ValueAwareLapper, StringDictionary, DictionaryString};
 pub use value_aware_lapper_cache::ValueAwareLapperCache;
 pub use vec_cache::VecCache;
 
@@ -416,14 +416,8 @@ where
         UnmergedBTreeCache::new(self.data)
     }
 
-    /// Build a `ValueAwareLapperCache` from the data
-    pub fn build_value_aware_lapper_cache(self) -> Result<ValueAwareLapperCache<V>, CacheBuildError>
-    where
-        V: Ord + Send + Sync,
-    {
-        ValueAwareLapperCache::new(self.data)
-    }
 }
+
 
 /// Represents a single value from an Arrow column
 #[derive(Clone, Debug, PartialEq)]
@@ -567,17 +561,18 @@ impl HeapSize for ArrowValue {
 }
 
 /// A row of data from a `RecordBatch`, excluding the time column.
-/// This represents all column values for a specific timestamp.
+/// This represents all tag values for a specific timestamp.
+/// Since tags are always strings, we store them as String instead of ArrowValue.
 #[derive(Clone, Debug)]
 pub struct RecordBatchRow {
-    /// Column names and their typed values
-    pub values: BTreeMap<String, ArrowValue>,
+    /// Tag names and their string values
+    pub values: BTreeMap<String, String>,
 }
 
 impl RecordBatchRow {
-    /// Create a new `RecordBatchRow` from column values
+    /// Create a new `RecordBatchRow` from tag values
     #[must_use]
-    pub fn new(values: BTreeMap<String, ArrowValue>) -> Self {
+    pub fn new(values: BTreeMap<String, String>) -> Self {
         Self { values }
     }
 }
@@ -624,7 +619,7 @@ impl PartialOrd for RecordBatchRow {
 
 impl HeapSize for RecordBatchRow {
     fn heap_size(&self) -> usize {
-        // The BTreeMap itself has heap allocation, plus the strings and ArrowValues
+        // The BTreeMap itself has heap allocation, plus the strings
         self.values.heap_size()
     }
 }
@@ -690,110 +685,109 @@ pub fn extract_rows_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, RecordBat
     let mut results = Vec::with_capacity(batch.num_rows());
 
     for (row_idx, ts) in timestamps_vec.iter().enumerate().take(batch.num_rows()) {
-        // Collect all non-time column values for this row
+        // Collect all non-time column values for this row as strings
         let mut row_values = BTreeMap::new();
 
         for &(col_idx, ref col_name) in &non_time_columns {
             let array = batch.column(col_idx);
 
-            // Extract typed value for this row
+            // Extract value and convert to string for tags
             let value = if array.is_valid(row_idx) {
                 match array.data_type() {
-                    DataType::Null => ArrowValue::Null,
+                    DataType::Null => "null".to_string(),
                     DataType::Boolean => array
                         .as_any()
                         .downcast_ref::<BooleanArray>()
-                        .map_or(ArrowValue::Unsupported("bool_error".to_string()), |arr| {
-                            ArrowValue::Boolean(arr.value(row_idx))
+                        .map_or("bool_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::Int8 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Int8Array>()
-                        .map_or(ArrowValue::Unsupported("int8_error".to_string()), |arr| {
-                            ArrowValue::Int8(arr.value(row_idx))
+                        .map_or("int8_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::Int16 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Int16Array>()
-                        .map_or(ArrowValue::Unsupported("int16_error".to_string()), |arr| {
-                            ArrowValue::Int16(arr.value(row_idx))
+                        .map_or("int16_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::Int32 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Int32Array>()
-                        .map_or(ArrowValue::Unsupported("int32_error".to_string()), |arr| {
-                            ArrowValue::Int32(arr.value(row_idx))
+                        .map_or("int32_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::Int64 => array
                         .as_any()
                         .downcast_ref::<Int64Array>()
-                        .map_or(ArrowValue::Unsupported("int64_error".to_string()), |arr| {
-                            ArrowValue::Int64(arr.value(row_idx))
+                        .map_or("int64_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::UInt8 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt8Array>()
-                        .map_or(ArrowValue::Unsupported("uint8_error".to_string()), |arr| {
-                            ArrowValue::UInt8(arr.value(row_idx))
+                        .map_or("uint8_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::UInt16 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt16Array>()
-                        .map_or(ArrowValue::Unsupported("uint16_error".to_string()), |arr| {
-                            ArrowValue::UInt16(arr.value(row_idx))
+                        .map_or("uint16_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::UInt32 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt32Array>()
-                        .map_or(ArrowValue::Unsupported("uint32_error".to_string()), |arr| {
-                            ArrowValue::UInt32(arr.value(row_idx))
+                        .map_or("uint32_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::UInt64 => array
                         .as_any()
                         .downcast_ref::<arrow::array::UInt64Array>()
-                        .map_or(ArrowValue::Unsupported("uint64_error".to_string()), |arr| {
-                            ArrowValue::UInt64(arr.value(row_idx))
+                        .map_or("uint64_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::Float32 => array
                         .as_any()
                         .downcast_ref::<arrow::array::Float32Array>()
-                        .map_or(
-                            ArrowValue::Unsupported("float32_error".to_string()),
-                            |arr| ArrowValue::Float32(arr.value(row_idx)),
-                        ),
+                        .map_or("float32_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
+                        }),
                     DataType::Float64 => array.as_any().downcast_ref::<Float64Array>().map_or(
-                        ArrowValue::Unsupported("float64_error".to_string()),
-                        |arr| ArrowValue::Float64(arr.value(row_idx)),
+                        "float64_error".to_string(),
+                        |arr| arr.value(row_idx).to_string(),
                     ),
                     DataType::Utf8 => array
                         .as_any()
                         .downcast_ref::<StringArray>()
-                        .map_or(ArrowValue::Unsupported("string_error".to_string()), |arr| {
-                            ArrowValue::String(arr.value(row_idx).to_string())
+                        .map_or("string_error".to_string(), |arr| {
+                            arr.value(row_idx).to_string()
                         }),
                     DataType::Binary => array
                         .as_any()
                         .downcast_ref::<arrow::array::BinaryArray>()
-                        .map_or(ArrowValue::Unsupported("binary_error".to_string()), |arr| {
-                            ArrowValue::Binary(arr.value(row_idx).to_vec())
+                        .map_or("binary_error".to_string(), |arr| {
+                            format!("{:?}", arr.value(row_idx))
                         }),
                     DataType::Dictionary(_, _) => {
                         // Handle dictionary encoded columns (like tags)
                         let dict_array = as_dictionary_array::<Int32Type>(array);
                         if let Some(key) = dict_array.key(row_idx) {
                             let values = as_string_array(dict_array.values());
-                            ArrowValue::String(values.value(key).to_string())
+                            values.value(key).to_string()
                         } else {
-                            ArrowValue::Null
+                            "null".to_string()
                         }
                     }
                     dt => {
                         // For unsupported types, store the type name
-                        ArrowValue::Unsupported(format!("{dt:?}"))
+                        format!("unsupported_{dt:?}")
                     }
                 }
             } else {
-                ArrowValue::Null
+                "null".to_string()
             };
 
             row_values.insert(col_name.to_string(), value);

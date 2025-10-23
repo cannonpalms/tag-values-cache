@@ -365,16 +365,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "InteravlCache loses records with duplicate timestamps")]
     fn test_known_bug_duplicate_timestamp_values() {
-        use crate::{RecordBatchRow, ArrowValue};
+        use crate::RecordBatchRow;
         use std::collections::BTreeMap;
 
         // Create two different RecordBatchRow values
         let mut values1 = BTreeMap::new();
-        values1.insert("field".to_string(), ArrowValue::Int64(1));
+        values1.insert("field".to_string(), "1".to_string());
         let row1 = RecordBatchRow::new(values1);
 
         let mut values2 = BTreeMap::new();
-        values2.insert("field".to_string(), ArrowValue::Int64(2));
+        values2.insert("field".to_string(), "2".to_string());
         let row2 = RecordBatchRow::new(values2);
 
         // Both at timestamp 5
