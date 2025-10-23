@@ -1,12 +1,11 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use parquet::file::reader::{FileReader, SerializedFileReader};
-use std::collections::BTreeMap;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 use tag_values_cache::{
-    IntervalCache, RecordBatchRow, SortedData, ValueAwareLapperCache,
+    IntervalCache, RecordBatchRow, SortedData, ValueAwareLapperCache, extract_rows_from_batch,
 };
 
 use std::collections::HashSet;
@@ -63,23 +62,21 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
         println!("Loading: {:?}", path.file_name().unwrap_or_default());
 
         let file = File::open(path)?;
-        let reader = SerializedFileReader::new(file)
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        let row_iter = reader
-            .get_row_iter(None)
+        let reader = builder.build()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let mut file_data = Vec::new();
-        for record_result in row_iter {
-            match record_result {
-                Ok(record) => {
-                    if let Some((timestamp, row)) = parse_parquet_row(&record) {
-                        file_data.push((timestamp, row));
-                    }
+        for batch_result in reader {
+            match batch_result {
+                Ok(batch) => {
+                    let rows = extract_rows_from_batch(&batch);
+                    file_data.extend(rows);
                 }
                 Err(e) => {
-                    eprintln!("  Warning: Failed to read row: {}", e);
+                    eprintln!("  Warning: Failed to read batch: {}", e);
                     continue;
                 }
             }
@@ -157,36 +154,6 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
     println!();
 
     Ok(all_data)
-}
-
-/// Parse a single parquet row into our cache format
-/// Only string columns are treated as tags; numeric/boolean fields are ignored
-fn parse_parquet_row(record: &parquet::record::Row) -> Option<(u64, RecordBatchRow)> {
-    let mut values = BTreeMap::new();
-    let mut timestamp: Option<u64> = None;
-
-    // Iterate through all fields in the row
-    for (name, field) in record.get_column_iter() {
-        match name.as_str() {
-            // Look for common timestamp field names
-            "timestamp" | "time" | "ts" => {
-                timestamp = match field {
-                    parquet::record::Field::Long(v) => Some(*v as u64),
-                    parquet::record::Field::ULong(v) => Some(*v),
-                    _ => None,
-                };
-            }
-            // Only process string fields as tags (ignore numeric/boolean fields)
-            _ => {
-                if let parquet::record::Field::Str(s) = field {
-                    values.insert(name.clone(), s.to_string());
-                }
-                // All other field types (numeric, boolean, etc.) are ignored
-            }
-        }
-    }
-
-    timestamp.map(|ts| (ts, RecordBatchRow::new(values)))
 }
 
 /// Load the parquet data once and return it
