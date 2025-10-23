@@ -24,7 +24,7 @@ use std::fmt;
 use std::ops::Range;
 use std::rc::Rc;
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
+use arrow::array::{Array, StringArray};
 use arrow::array::{RecordBatch, as_dictionary_array, as_primitive_array, as_string_array};
 use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
 
@@ -46,7 +46,7 @@ pub use lapper_cache::LapperCache;
 pub use nclist_cache::NCListCache;
 pub use segment_tree_cache::SegmentTreeCache;
 pub use unmerged_btree_cache::UnmergedBTreeCache;
-pub use value_aware_lapper::{ValueAwareLapper, StringDictionary, DictionaryString};
+pub use value_aware_lapper::ValueAwareLapper;
 pub use value_aware_lapper_cache::ValueAwareLapperCache;
 pub use vec_cache::VecCache;
 
@@ -645,7 +645,13 @@ pub fn extract_rows_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, RecordBat
             if column_type == "iox::column_type::timestamp" {
                 ts_idx = Some(idx);
             } else {
-                non_time_columns.push((idx, field.name().clone()));
+                // Only include Utf8 columns (tags)
+                match field.data_type() {
+                    DataType::Utf8 | DataType::Dictionary(_, _) => {
+                        non_time_columns.push((idx, field.name().clone()));
+                    }
+                    _ => {} // Skip non-string columns
+                }
             }
         } else {
             // If no metadata, check field name for time column
@@ -657,7 +663,13 @@ pub fn extract_rows_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, RecordBat
             {
                 ts_idx = Some(idx);
             } else {
-                non_time_columns.push((idx, field.name().clone()));
+                // Only include Utf8 columns (tags)
+                match field.data_type() {
+                    DataType::Utf8 | DataType::Dictionary(_, _) => {
+                        non_time_columns.push((idx, field.name().clone()));
+                    }
+                    _ => {} // Skip non-string columns
+                }
             }
         }
     }
@@ -691,85 +703,14 @@ pub fn extract_rows_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, RecordBat
         for &(col_idx, ref col_name) in &non_time_columns {
             let array = batch.column(col_idx);
 
-            // Extract value and convert to string for tags
+            // Extract value from Utf8 or Dictionary columns only
             let value = if array.is_valid(row_idx) {
                 match array.data_type() {
-                    DataType::Null => "null".to_string(),
-                    DataType::Boolean => array
-                        .as_any()
-                        .downcast_ref::<BooleanArray>()
-                        .map_or("bool_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::Int8 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::Int8Array>()
-                        .map_or("int8_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::Int16 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::Int16Array>()
-                        .map_or("int16_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::Int32 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::Int32Array>()
-                        .map_or("int32_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::Int64 => array
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .map_or("int64_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::UInt8 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt8Array>()
-                        .map_or("uint8_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::UInt16 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt16Array>()
-                        .map_or("uint16_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::UInt32 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt32Array>()
-                        .map_or("uint32_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::UInt64 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::UInt64Array>()
-                        .map_or("uint64_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::Float32 => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::Float32Array>()
-                        .map_or("float32_error".to_string(), |arr| {
-                            arr.value(row_idx).to_string()
-                        }),
-                    DataType::Float64 => array.as_any().downcast_ref::<Float64Array>().map_or(
-                        "float64_error".to_string(),
-                        |arr| arr.value(row_idx).to_string(),
-                    ),
                     DataType::Utf8 => array
                         .as_any()
                         .downcast_ref::<StringArray>()
                         .map_or("string_error".to_string(), |arr| {
                             arr.value(row_idx).to_string()
-                        }),
-                    DataType::Binary => array
-                        .as_any()
-                        .downcast_ref::<arrow::array::BinaryArray>()
-                        .map_or("binary_error".to_string(), |arr| {
-                            format!("{:?}", arr.value(row_idx))
                         }),
                     DataType::Dictionary(_, _) => {
                         // Handle dictionary encoded columns (like tags)
@@ -782,8 +723,8 @@ pub fn extract_rows_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, RecordBat
                         }
                     }
                     dt => {
-                        // For unsupported types, store the type name
-                        format!("unsupported_{dt:?}")
+                        // This shouldn't happen since we filter for Utf8/Dictionary columns
+                        panic!("Unexpected data type in non-time columns: {dt:?}")
                     }
                 }
             } else {

@@ -1235,6 +1235,7 @@ dependencies = [
  "arrow",
  "chrono",
  "criterion",
+ "indexmap",
  "interavl",
  "intervaltree",
  "num-traits",

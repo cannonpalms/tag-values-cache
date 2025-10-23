@@ -4,11 +4,12 @@
 //! ValueAwareLapper internally, which only merges intervals when both boundaries
 //! AND values match.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use indexmap::IndexSet;
 use rust_lapper::Interval;
 
 use crate::{
@@ -19,17 +20,14 @@ use crate::{
 /// An interval cache implementation using ValueAwareLapper with dictionary encoding.
 ///
 /// This cache uses Arc for RecordBatchRow deduplication internally, ensuring each unique
-/// RecordBatchRow is only stored once in memory. It maintains a separate collection of owned
-/// RecordBatchRows to satisfy the IntervalCache trait requirements.
+/// RecordBatchRow is only stored once in memory. Uses IndexSet to maintain insertion order
+/// and provide O(1) lookups without redundant storage.
 pub struct ValueAwareLapperCache {
     /// The ValueAwareLapper instance containing all intervals with interned RecordBatchRows
     value_lapper: ValueAwareLapper<u64, Arc<RecordBatchRow>>,
 
-    /// Collection of unique RecordBatchRows that can be referenced
-    unique_rows: Vec<RecordBatchRow>,
-
-    /// Map from Arc<RecordBatchRow> to index in unique_rows vec
-    row_to_index: HashMap<Arc<RecordBatchRow>, usize>,
+    /// Deduplicated RecordBatchRows with stable indexing via insertion order
+    unique_rows: IndexSet<Arc<RecordBatchRow>>,
 
     /// Time resolution for bucketing timestamps
     /// Duration::from_nanos(1) = nanosecond resolution (no bucketing)
@@ -52,18 +50,20 @@ impl ValueAwareLapperCache {
     }
 
     /// Intern a RecordBatchRow, ensuring only one copy exists in memory.
+    ///
+    /// Returns the Arc from the IndexSet, either existing or newly inserted.
     fn intern_row(
-        unique_rows: &mut Vec<RecordBatchRow>,
-        row_to_index: &mut HashMap<Arc<RecordBatchRow>, usize>,
+        unique_rows: &mut IndexSet<Arc<RecordBatchRow>>,
         row: RecordBatchRow,
     ) -> Arc<RecordBatchRow> {
-        let arc_row: Arc<RecordBatchRow> = Arc::new(row.clone());
-        if let Some(&_index) = row_to_index.get(&arc_row) {
-            arc_row
+        let arc_row = Arc::new(row);
+
+        // Check if it already exists and return the existing Arc
+        if let Some(existing) = unique_rows.get(&arc_row) {
+            existing.clone()
         } else {
-            let index = unique_rows.len();
-            unique_rows.push(row);
-            row_to_index.insert(arc_row.clone(), index);
+            // Insert and return the new Arc
+            unique_rows.insert(arc_row.clone());
             arc_row
         }
     }
@@ -75,8 +75,7 @@ impl ValueAwareLapperCache {
     fn build_intervals(
         points: Vec<(Timestamp, RecordBatchRow)>,
         resolution: Duration,
-        unique_rows: &mut Vec<RecordBatchRow>,
-        row_to_index: &mut HashMap<Arc<RecordBatchRow>, usize>,
+        unique_rows: &mut IndexSet<Arc<RecordBatchRow>>,
     ) -> Result<Vec<Interval<u64, Arc<RecordBatchRow>>>, CacheBuildError> {
         let mut intervals = Vec::new();
 
@@ -98,7 +97,7 @@ impl ValueAwareLapperCache {
                 .ok_or(CacheBuildError::TimestampOverflow(bucketed_t))?;
 
             // Intern the row to ensure deduplication
-            let interned = Self::intern_row(unique_rows, row_to_index, v);
+            let interned = Self::intern_row(unique_rows, v);
 
             match open_intervals.get_mut(&interned) {
                 Some((_, end)) if *end == bucketed_t => {
@@ -146,10 +145,9 @@ impl ValueAwareLapperCache {
         sorted_data: SortedData<RecordBatchRow>,
         resolution: Duration,
     ) -> Result<Self, CacheBuildError> {
-        let mut unique_rows = Vec::new();
-        let mut row_to_index = HashMap::new();
+        let mut unique_rows = IndexSet::new();
         let points = sorted_data.into_inner();
-        let intervals = Self::build_intervals(points, resolution, &mut unique_rows, &mut row_to_index)?;
+        let intervals = Self::build_intervals(points, resolution, &mut unique_rows)?;
 
         let mut value_lapper = ValueAwareLapper::new(intervals);
         value_lapper.merge_with_values();
@@ -157,7 +155,6 @@ impl ValueAwareLapperCache {
         Ok(Self {
             value_lapper,
             unique_rows,
-            row_to_index,
             resolution,
         })
     }
@@ -175,12 +172,12 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
         let start = bucketed_t;
         let stop = bucketed_t + 1;
 
-        // Find matching intervals and map Arc<RecordBatchRow> to RecordBatchRow references
+        // Find matching intervals and get RecordBatchRow references from IndexSet
         self.value_lapper
             .find(start, stop)
             .filter_map(|interval| {
-                self.row_to_index.get(&interval.val)
-                    .and_then(|&index| self.unique_rows.get(index))
+                // IndexSet allows us to get a reference to the Arc's inner value
+                self.unique_rows.get(&interval.val).map(|arc| arc.as_ref())
             })
             .collect()
     }
@@ -207,8 +204,7 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
         self.value_lapper
             .find(bucketed_start, query_end)
             .filter_map(|interval| {
-                self.row_to_index.get(&interval.val)
-                    .and_then(|&index| self.unique_rows.get(index))
+                self.unique_rows.get(&interval.val).map(|arc| arc.as_ref())
             })
             .collect()
     }
@@ -219,7 +215,6 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
             sorted_data.into_inner(),
             self.resolution,
             &mut self.unique_rows,
-            &mut self.row_to_index
         )?;
 
         // Collect all existing intervals
@@ -240,13 +235,12 @@ impl IntervalCache<RecordBatchRow> for ValueAwareLapperCache {
         // Size of all intervals in the ValueAwareLapper
         size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, Arc<RecordBatchRow>>>();
 
-        // Add heap size for unique rows
-        for row in &self.unique_rows {
-            size += row.heap_size();
+        // Add heap size for unique rows in IndexSet
+        // IndexSet stores both keys and an index map internally
+        size += self.unique_rows.capacity() * std::mem::size_of::<Arc<RecordBatchRow>>();
+        for arc_row in &self.unique_rows {
+            size += arc_row.heap_size();
         }
-
-        // Add size of the HashMap
-        size += self.row_to_index.capacity() * std::mem::size_of::<(Arc<RecordBatchRow>, usize)>();
 
         size
     }
@@ -382,8 +376,8 @@ mod tests {
 
         let data = vec![
             (0, row_a.clone()),
-            (1, row_a.clone()),
             (0, row_b.clone()),
+            (1, row_a.clone()),
             (1, row_b.clone()),
         ];
 
