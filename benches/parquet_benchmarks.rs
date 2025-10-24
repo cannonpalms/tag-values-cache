@@ -3,12 +3,16 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::{
     IntervalCache, SortedData, TagSet, ValueAwareLapperCache, extract_tags_from_batch,
 };
 
 use std::collections::HashSet;
+
+// Global data loaded once and shared across all benchmarks
+static PARQUET_DATA: OnceLock<Vec<(u64, TagSet)>> = OnceLock::new();
 
 /// Calculate cardinality (unique tag combinations) from data
 fn calculate_cardinality(data: &[(u64, TagSet)]) -> usize {
@@ -65,7 +69,8 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        let reader = builder.build()
+        let reader = builder
+            .build()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
         let mut file_data = Vec::new();
@@ -156,58 +161,63 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
     Ok(all_data)
 }
 
-/// Load the parquet data once and return it
-fn load_parquet_data() -> Option<Vec<(u64, TagSet)>> {
-    let parquet_dir = std::path::PathBuf::from("benches/data/parquet");
+/// Load the parquet data once and return a reference to it
+fn get_parquet_data() -> Option<&'static Vec<(u64, TagSet)>> {
+    PARQUET_DATA.get_or_init(|| {
+        let parquet_dir = std::path::PathBuf::from("benches/data/parquet");
 
-    // Check if the parquet data directory exists
-    if !parquet_dir.exists() {
-        eprintln!(
-            "Error: Parquet data directory not found at {:?}",
-            parquet_dir
-        );
-        eprintln!(
-            "Please create benches/data/parquet and add parquet files before running benchmarks"
-        );
-        return None;
-    }
+        // Check if the parquet data directory exists
+        if !parquet_dir.exists() {
+            eprintln!(
+                "Error: Parquet data directory not found at {:?}",
+                parquet_dir
+            );
+            eprintln!(
+                "Please create benches/data/parquet and add parquet files before running benchmarks"
+            );
+            return Vec::new();
+        }
 
-    match load_parquet_files(&parquet_dir) {
-        Ok(data) => {
-            println!("\n=== Data Statistics ===");
-            println!("Lines loaded: {}", data.len());
+        match load_parquet_files(&parquet_dir) {
+            Ok(data) => {
+                println!("\n=== Data Statistics ===");
+                println!("Lines loaded: {}", data.len());
 
-            // Display time range if data is not empty
-            if !data.is_empty() {
-                let timestamps: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
-                let min_ts = *timestamps.iter().min().unwrap();
-                let max_ts = *timestamps.iter().max().unwrap();
+                // Display time range if data is not empty
+                if !data.is_empty() {
+                    let timestamps: Vec<u64> = data.iter().map(|(ts, _)| *ts).collect();
+                    let min_ts = *timestamps.iter().min().unwrap();
+                    let max_ts = *timestamps.iter().max().unwrap();
 
-                println!("Timestamp range: {} to {}", min_ts, max_ts);
+                    println!("Timestamp range: {} to {}", min_ts, max_ts);
 
-                let duration_ns = max_ts - min_ts;
-                let duration_secs = duration_ns / 1_000_000_000;
-                let hours = duration_secs / 3600;
-                let minutes = (duration_secs % 3600) / 60;
-                let seconds = duration_secs % 60;
+                    let duration_ns = max_ts - min_ts;
+                    let duration_secs = duration_ns / 1_000_000_000;
+                    let hours = duration_secs / 3600;
+                    let minutes = (duration_secs % 3600) / 60;
+                    let seconds = duration_secs % 60;
 
-                println!("Duration: {}h {}m {}s", hours, minutes, seconds);
-                println!("======================\n");
+                    println!("Duration: {}h {}m {}s", hours, minutes, seconds);
+                    println!("======================\n");
+                }
+
+                data
             }
+            Err(e) => {
+                eprintln!("Error loading parquet files: {}", e);
+                Vec::new()
+            }
+        }
+    });
 
-            Some(data)
-        }
-        Err(e) => {
-            eprintln!("Error loading parquet files: {}", e);
-            None
-        }
-    }
+    let data = PARQUET_DATA.get().unwrap();
+    if data.is_empty() { None } else { Some(data) }
 }
 
 /// Benchmark building ValueAwareLapperCache from parquet data
 fn bench_build_cache(c: &mut Criterion) {
-    // Load data once
-    let parsed_data = match load_parquet_data() {
+    // Get reference to shared data
+    let parsed_data = match get_parquet_data() {
         Some(data) => data,
         None => return,
     };
@@ -229,44 +239,46 @@ fn bench_build_cache(c: &mut Criterion) {
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
-        // Build cache once to get statistics
-        let cache =
-            ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(sorted_data.clone(), *resolution)
-                .unwrap();
-
-        println!("\n=== {} Resolution ===", name);
-        println!("  Intervals: {}", cache.interval_count());
-        println!(
-            "  Size: {:.2} MB",
-            cache.size_bytes() as f64 / (1024.0 * 1024.0)
-        );
-
         group.bench_function(format!("{}_resolution", name), |b| {
+            // Build cache once to get statistics on first iteration
+            let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+                sorted_data.clone(),
+                *resolution,
+            )
+            .unwrap();
+
+            println!("\n=== {} Resolution ===", name);
+            println!("  Intervals: {}", cache.interval_count());
+            println!(
+                "  Size: {:.2} MB",
+                cache.size_bytes() as f64 / (1024.0 * 1024.0)
+            );
+            drop(cache);
+
             b.iter_batched(
                 || sorted_data.clone(),
                 |data| {
-                    let cache =
-                        ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(data, *resolution)
-                            .unwrap();
+                    let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+                        data,
+                        *resolution,
+                    )
+                    .unwrap();
                     black_box(cache);
                 },
                 criterion::BatchSize::SmallInput,
             );
         });
-
-        drop(cache);
     }
 
     drop(sorted_data);
-    drop(parsed_data);
 
     group.finish();
 }
 
 /// Benchmark querying the cache with ranges
 fn bench_query_cache(c: &mut Criterion) {
-    // Load data once
-    let parsed_data = match load_parquet_data() {
+    // Get reference to shared data
+    let parsed_data = match get_parquet_data() {
         Some(data) => data,
         None => return,
     };
@@ -295,67 +307,47 @@ fn bench_query_cache(c: &mut Criterion) {
     // Using TagSet for direct tag handling
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
+    let n_queries = 100;
+
+    // Create test ranges distributed across the time span (in nanoseconds)
+    // Each range covers the same wall-clock duration
+    let test_ranges: Vec<std::ops::Range<u64>> = (0..n_queries)
+        .map(|i| {
+            let start = original_min_ns
+                + ((original_range_ns - wall_clock_range_ns) * i as u64) / (n_queries as u64);
+            let end = start + wall_clock_range_ns;
+            start..end
+        })
+        .collect();
+
+    group.throughput(Throughput::Elements(n_queries as u64));
+
     for (name, resolution) in &resolutions {
-        // Build cache for this resolution
-        let cache =
-            ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(sorted_data.clone(), *resolution)
-                .unwrap();
+        group.bench_function(BenchmarkId::new("range_10pct", name), |b| {
+            // Build cache for this resolution
+            let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+                sorted_data.clone(),
+                *resolution,
+            )
+            .unwrap();
 
-        let n_queries = 100;
-
-        // Debug: print query statistics
-        println!("\n=== Query Stats for {} ===", name);
-        println!("  min_ts: {}, max_ts: {}", original_min_ns, original_max_ns);
-        println!("  range: {}", original_range_ns);
-        println!(
-            "  wall_clock_range_ns: {} ns (~{} seconds)",
-            wall_clock_range_ns,
-            wall_clock_range_ns / 1_000_000_000
-        );
-        println!("  num intervals: {}", cache.interval_count());
-
-        // Create test ranges distributed across the time span (in nanoseconds)
-        // Each range covers the same wall-clock duration
-        let test_ranges: Vec<std::ops::Range<u64>> = (0..n_queries)
-            .map(|i| {
-                let start = original_min_ns
-                    + ((original_range_ns - wall_clock_range_ns) * i as u64) / (n_queries as u64);
-                let end = start + wall_clock_range_ns;
-                start..end
-            })
-            .collect();
-
-        // Sample query to check result count
-        let sample_results = cache.query_range(test_ranges[0].clone());
-        println!("  sample query results: {}", sample_results.len());
-
-        group.throughput(Throughput::Elements(n_queries as u64));
-
-        group.bench_with_input(
-            BenchmarkId::new("range_10pct", name),
-            &(&cache, &test_ranges),
-            |b, (cache, ranges)| {
-                b.iter(|| {
-                    for range in ranges.iter() {
-                        black_box(cache.query_range(range.clone()));
-                    }
-                });
-            },
-        );
-
-        drop(cache);
-        drop(test_ranges);
+            b.iter(|| {
+                for range in test_ranges.iter() {
+                    black_box(cache.query_range(range.clone()));
+                }
+            });
+        });
     }
 
     drop(sorted_data);
-    drop(parsed_data);
     group.finish();
 }
 
 /// Benchmark appending to an existing cache
+#[allow(dead_code)]
 fn bench_append_cache(c: &mut Criterion) {
-    // Load data once
-    let parsed_data = match load_parquet_data() {
+    // Get reference to shared data
+    let parsed_data = match get_parquet_data() {
         Some(data) => data,
         None => return,
     };
@@ -409,7 +401,6 @@ fn bench_append_cache(c: &mut Criterion) {
         drop(sorted_append);
     }
 
-    drop(parsed_data);
     group.finish();
 }
 
@@ -417,6 +408,6 @@ criterion_group!(
     benches,
     bench_build_cache,
     bench_query_cache,
-    bench_append_cache,
+    // bench_append_cache, // Temporarily disabled - takes a while and not a current focus
 );
 criterion_main!(benches);
