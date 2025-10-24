@@ -5,40 +5,30 @@
 //! AND values match.
 
 use std::collections::HashSet;
-use std::hash::Hash;
 use std::ops::Range;
 use std::time::Duration;
 
 use rust_lapper::Interval;
 
 use crate::{
-    CacheBuildError, IntervalCache, SortedData, Timestamp,
+    CacheBuildError, IntervalCache, SortedData, TagSet, Timestamp,
     value_aware_lapper::ValueAwareLapper,
 };
 
 /// An interval cache implementation using ValueAwareLapper for value-aware merging.
 ///
-/// This cache is generic over the value type `V`, which must be cloneable and comparable.
+/// This cache stores TagSet values, which represent sets of (tag_name, tag_value) pairs.
 /// Values are stored directly in the intervals without any Arc wrapping or deduplication.
-///
-/// # Type Parameters
-/// * `V` - The value type stored in intervals (e.g., `RecordBatchRow`, `TagSet`)
-pub struct ValueAwareLapperCache<V>
-where
-    V: Clone + Eq + Ord + Hash + Send + Sync,
-{
+pub struct ValueAwareLapperCache {
     /// The ValueAwareLapper instance containing all intervals
-    value_lapper: ValueAwareLapper<u64, V>,
+    value_lapper: ValueAwareLapper<u64, TagSet>,
 
     /// Time resolution for bucketing timestamps
     /// Duration::from_nanos(1) = nanosecond resolution (no bucketing)
     resolution: Duration,
 }
 
-impl<V> ValueAwareLapperCache<V>
-where
-    V: Clone + Eq + Ord + Hash + Send + Sync,
-{
+impl ValueAwareLapperCache {
     /// Bucket a timestamp according to the specified resolution.
     ///
     /// For nanosecond resolution (Duration::from_nanos(1) or less), returns the timestamp unchanged.
@@ -58,9 +48,9 @@ where
     /// Consecutive timestamps with the same value are merged into continuous intervals.
     /// If resolution is provided, timestamps are bucketed before building intervals.
     fn build_intervals(
-        points: Vec<(Timestamp, V)>,
+        points: Vec<(Timestamp, TagSet)>,
         resolution: Duration,
-    ) -> Result<Vec<Interval<u64, V>>, CacheBuildError> {
+    ) -> Result<Vec<Interval<u64, TagSet>>, CacheBuildError> {
         let mut intervals = Vec::new();
 
         if points.is_empty() {
@@ -69,7 +59,7 @@ where
 
         // Build intervals by merging consecutive identical values
         // Track open intervals for each value to handle overlapping
-        let mut open_intervals: std::collections::HashMap<V, (u64, u64)> =
+        let mut open_intervals: std::collections::HashMap<TagSet, (u64, u64)> =
             std::collections::HashMap::new();
 
         for (t, v) in points {
@@ -123,7 +113,7 @@ where
     /// * `sorted_data` - Pre-sorted data wrapped in `SortedData` type
     /// * `resolution` - Time bucket size (e.g., `Duration::from_secs(5)` for 5-second buckets)
     pub fn from_sorted_with_resolution(
-        sorted_data: SortedData<V>,
+        sorted_data: SortedData<TagSet>,
         resolution: Duration,
     ) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
@@ -139,16 +129,13 @@ where
     }
 }
 
-impl<V> IntervalCache<V> for ValueAwareLapperCache<V>
-where
-    V: Clone + Eq + Ord + Hash + Send + Sync,
-{
-    fn from_sorted(sorted_data: SortedData<V>) -> Result<Self, CacheBuildError> {
+impl IntervalCache<TagSet> for ValueAwareLapperCache {
+    fn from_sorted(sorted_data: SortedData<TagSet>) -> Result<Self, CacheBuildError> {
         // Default to nanosecond resolution for backward compatibility
         Self::from_sorted_with_resolution(sorted_data, Duration::from_nanos(1))
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
+    fn query_point(&self, t: Timestamp) -> HashSet<&TagSet> {
         // Bucket the query timestamp to match the cache resolution
         let bucketed_t = Self::bucket_timestamp(t, self.resolution);
         let start = bucketed_t;
@@ -161,7 +148,7 @@ where
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
+    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&TagSet> {
         // Bucket the query range to match the cache resolution
         let bucketed_start = Self::bucket_timestamp(range.start, self.resolution);
         // For the end, we need to ensure we don't miss data by rounding down
@@ -186,7 +173,7 @@ where
             .collect()
     }
 
-    fn append_sorted(&mut self, sorted_data: SortedData<V>) -> Result<(), CacheBuildError> {
+    fn append_sorted(&mut self, sorted_data: SortedData<TagSet>) -> Result<(), CacheBuildError> {
         // Build new intervals from sorted points using the cache's resolution
         let new_intervals = Self::build_intervals(
             sorted_data.into_inner(),
@@ -209,10 +196,10 @@ where
         let mut size = std::mem::size_of::<Self>();
 
         // Size of all intervals in the ValueAwareLapper
-        size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, V>>();
+        size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, TagSet>>();
 
-        // Note: This doesn't account for heap allocations within V
-        // For types like RecordBatchRow or TagSet, additional heap size calculation would be needed
+        // Note: This doesn't account for heap allocations within TagSet
+        // For accurate heap size, we'd need to calculate the size of each tag name-value pair
 
         size
     }
@@ -225,53 +212,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RecordBatchRow;
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
 
     #[test]
     fn test_value_aware_lapper_cache_basic() {
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
         let data = vec![
-            (0, row_a.clone()),
-            (1, row_a.clone()),
-            (2, row_a.clone()),
-            (5, row_b.clone()),
-            (6, row_b.clone()),
+            (0, tag_set_a.clone()),
+            (1, tag_set_a.clone()),
+            (2, tag_set_a.clone()),
+            (5, tag_set_b.clone()),
+            (6, tag_set_b.clone()),
         ];
 
         let sorted_data = SortedData::from_sorted(data);
         let cache = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
 
         // Check merged intervals
-        assert_eq!(cache.query_point(0), HashSet::from([&row_a]));
-        assert_eq!(cache.query_point(1), HashSet::from([&row_a]));
-        assert_eq!(cache.query_point(2), HashSet::from([&row_a]));
-        assert_eq!(cache.query_point(3), HashSet::<&RecordBatchRow>::new());
-        assert_eq!(cache.query_point(5), HashSet::from([&row_b]));
+        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
+        assert_eq!(cache.query_point(1), HashSet::from([&tag_set_a]));
+        assert_eq!(cache.query_point(2), HashSet::from([&tag_set_a]));
+        assert_eq!(cache.query_point(3), HashSet::<&TagSet>::new());
+        assert_eq!(cache.query_point(5), HashSet::from([&tag_set_b]));
     }
 
     #[test]
     fn test_value_aware_lapper_cache_overlapping() {
-        let mut values_x = BTreeMap::new();
-        values_x.insert("tag1".to_string(), "X".to_string());
-        let row_x = RecordBatchRow { values: values_x };
+        let mut tag_set_x = BTreeSet::new();
+        tag_set_x.insert(("tag1".to_string(), "X".to_string()));
 
-        let mut values_y = BTreeMap::new();
-        values_y.insert("tag1".to_string(), "Y".to_string());
-        let row_y = RecordBatchRow { values: values_y };
+        let mut tag_set_y = BTreeSet::new();
+        tag_set_y.insert(("tag1".to_string(), "Y".to_string()));
 
         let data = vec![
-            (0, row_x.clone()),
-            (1, row_x.clone()),
-            (1, row_y.clone()),
-            (2, row_y.clone()),
+            (0, tag_set_x.clone()),
+            (1, tag_set_x.clone()),
+            (1, tag_set_y.clone()),
+            (2, tag_set_y.clone()),
         ];
 
         let sorted_data = SortedData::from_sorted(data);
@@ -279,30 +261,27 @@ mod tests {
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.contains(&row_x));
-        assert!(values_at_1.contains(&row_y));
+        assert!(values_at_1.contains(&tag_set_x));
+        assert!(values_at_1.contains(&tag_set_y));
     }
 
     #[test]
     fn test_value_aware_lapper_cache_range_query() {
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
-        let mut values_c = BTreeMap::new();
-        values_c.insert("tag1".to_string(), "C".to_string());
-        let row_c = RecordBatchRow { values: values_c };
+        let mut tag_set_c = BTreeSet::new();
+        tag_set_c.insert(("tag1".to_string(), "C".to_string()));
 
         let data = vec![
-            (0, row_a.clone()),
-            (1, row_a.clone()),
-            (10, row_b.clone()),
-            (11, row_b.clone()),
-            (20, row_c.clone()),
+            (0, tag_set_a.clone()),
+            (1, tag_set_a.clone()),
+            (10, tag_set_b.clone()),
+            (11, tag_set_b.clone()),
+            (20, tag_set_c.clone()),
         ];
 
         let sorted_data = SortedData::from_sorted(data);
@@ -310,48 +289,44 @@ mod tests {
 
         let range_values = cache.query_range(0..15);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&row_a));
-        assert!(range_values.contains(&row_b));
+        assert!(range_values.contains(&tag_set_a));
+        assert!(range_values.contains(&tag_set_b));
     }
 
     #[test]
     fn test_value_aware_lapper_cache_append() {
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
-        let initial_data = vec![(0, row_a.clone()), (1, row_a.clone())];
+        let initial_data = vec![(0, tag_set_a.clone()), (1, tag_set_a.clone())];
         let sorted_initial = SortedData::from_sorted(initial_data);
         let mut cache = ValueAwareLapperCache::from_sorted(sorted_initial).unwrap();
 
-        let append_data = vec![(5, row_b.clone()), (6, row_b.clone())];
+        let append_data = vec![(5, tag_set_b.clone()), (6, tag_set_b.clone())];
         let sorted_append = SortedData::from_sorted(append_data);
         cache.append_sorted(sorted_append).unwrap();
 
-        assert_eq!(cache.query_point(0), HashSet::from([&row_a]));
-        assert_eq!(cache.query_point(5), HashSet::from([&row_b]));
+        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
+        assert_eq!(cache.query_point(5), HashSet::from([&tag_set_b]));
     }
 
     #[test]
     fn test_value_aware_merging() {
         // Test that intervals with same boundaries but different values don't merge
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
         let data = vec![
-            (0, row_a.clone()),
-            (0, row_b.clone()),
-            (1, row_a.clone()),
-            (1, row_b.clone()),
+            (0, tag_set_a.clone()),
+            (0, tag_set_b.clone()),
+            (1, tag_set_a.clone()),
+            (1, tag_set_b.clone()),
         ];
 
         let sorted_data = SortedData::from_sorted(data);
@@ -360,13 +335,13 @@ mod tests {
         // Both values should be present at timestamp 0 and 1
         let values_at_0 = cache.query_point(0);
         assert_eq!(values_at_0.len(), 2);
-        assert!(values_at_0.contains(&row_a));
-        assert!(values_at_0.contains(&row_b));
+        assert!(values_at_0.contains(&tag_set_a));
+        assert!(values_at_0.contains(&tag_set_b));
 
         let values_at_1 = cache.query_point(1);
         assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.contains(&row_a));
-        assert!(values_at_1.contains(&row_b));
+        assert!(values_at_1.contains(&tag_set_a));
+        assert!(values_at_1.contains(&tag_set_b));
 
         // Should have 2 intervals total (one for A, one for B)
         assert_eq!(cache.interval_count(), 2);
@@ -376,21 +351,19 @@ mod tests {
     fn test_resolution_5_seconds() {
         use std::time::Duration;
 
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
         // Timestamps at nanosecond resolution within a 5-second window
         let data = vec![
-            (0, row_a.clone()),             // Bucket 0
-            (1_000_000_000, row_a.clone()), // Bucket 0 (1 second)
-            (4_999_999_999, row_a.clone()), // Bucket 0 (just under 5 seconds)
-            (5_000_000_000, row_b.clone()), // Bucket 5000000000 (exactly 5 seconds)
-            (9_999_999_999, row_b.clone()), // Bucket 5000000000 (just under 10 seconds)
+            (0, tag_set_a.clone()),             // Bucket 0
+            (1_000_000_000, tag_set_a.clone()), // Bucket 0 (1 second)
+            (4_999_999_999, tag_set_a.clone()), // Bucket 0 (just under 5 seconds)
+            (5_000_000_000, tag_set_b.clone()), // Bucket 5000000000 (exactly 5 seconds)
+            (9_999_999_999, tag_set_b.clone()), // Bucket 5000000000 (just under 10 seconds)
         ];
 
         let cache = ValueAwareLapperCache::from_sorted_with_resolution(
@@ -400,24 +373,24 @@ mod tests {
         .unwrap();
 
         // All timestamps in [0, 5) seconds should be bucketed to 0
-        assert_eq!(cache.query_point(0), HashSet::from([&row_a]));
+        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
         assert_eq!(
             cache.query_point(1_000_000_000),
-            HashSet::from([&row_a])
+            HashSet::from([&tag_set_a])
         );
         assert_eq!(
             cache.query_point(4_999_999_999),
-            HashSet::from([&row_a])
+            HashSet::from([&tag_set_a])
         );
 
         // Timestamps in [5, 10) seconds should be bucketed to 5000000000
         assert_eq!(
             cache.query_point(5_000_000_000),
-            HashSet::from([&row_b])
+            HashSet::from([&tag_set_b])
         );
         assert_eq!(
             cache.query_point(9_999_999_999),
-            HashSet::from([&row_b])
+            HashSet::from([&tag_set_b])
         );
 
         // Should have 2 intervals (one per bucket)
@@ -428,20 +401,18 @@ mod tests {
     fn test_resolution_1_minute() {
         use std::time::Duration;
 
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
         let data = vec![
-            (0, row_a.clone()),              // Minute 0
-            (30_000_000_000, row_a.clone()), // Minute 0 (30 seconds)
-            (59_999_999_999, row_a.clone()), // Minute 0 (just under 1 minute)
-            (60_000_000_000, row_b.clone()), // Minute 1 (exactly 1 minute)
-            (90_000_000_000, row_b.clone()), // Minute 1 (1.5 minutes)
+            (0, tag_set_a.clone()),              // Minute 0
+            (30_000_000_000, tag_set_a.clone()), // Minute 0 (30 seconds)
+            (59_999_999_999, tag_set_a.clone()), // Minute 0 (just under 1 minute)
+            (60_000_000_000, tag_set_b.clone()), // Minute 1 (exactly 1 minute)
+            (90_000_000_000, tag_set_b.clone()), // Minute 1 (1.5 minutes)
         ];
 
         let cache = ValueAwareLapperCache::from_sorted_with_resolution(
@@ -451,16 +422,16 @@ mod tests {
         .unwrap();
 
         // All timestamps in minute 0 should map to the same bucket
-        assert_eq!(cache.query_point(0), HashSet::from([&row_a]));
+        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
         assert_eq!(
             cache.query_point(30_000_000_000),
-            HashSet::from([&row_a])
+            HashSet::from([&tag_set_a])
         );
 
         // Timestamps in minute 1 should map to a different bucket
         assert_eq!(
             cache.query_point(60_000_000_000),
-            HashSet::from([&row_b])
+            HashSet::from([&tag_set_b])
         );
 
         assert_eq!(cache.interval_count(), 2);
@@ -470,16 +441,15 @@ mod tests {
     fn test_resolution_merging() {
         use std::time::Duration;
 
-        let mut values_x = BTreeMap::new();
-        values_x.insert("tag1".to_string(), "X".to_string());
-        let row_x = RecordBatchRow { values: values_x };
+        let mut tag_set_x = BTreeSet::new();
+        tag_set_x.insert(("tag1".to_string(), "X".to_string()));
 
         // With 5-second resolution, these should all merge into one interval
         let data = vec![
-            (100, row_x.clone()),           // Bucket 0
-            (1_000_000_000, row_x.clone()), // Bucket 0
-            (2_500_000_000, row_x.clone()), // Bucket 0
-            (4_000_000_000, row_x.clone()), // Bucket 0
+            (100, tag_set_x.clone()),           // Bucket 0
+            (1_000_000_000, tag_set_x.clone()), // Bucket 0
+            (2_500_000_000, tag_set_x.clone()), // Bucket 0
+            (4_000_000_000, tag_set_x.clone()), // Bucket 0
         ];
 
         let cache = ValueAwareLapperCache::from_sorted_with_resolution(
@@ -492,10 +462,10 @@ mod tests {
         assert_eq!(cache.interval_count(), 1);
 
         // All queries within the 5-second bucket should return "X"
-        assert_eq!(cache.query_point(0), HashSet::from([&row_x]));
+        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_x]));
         assert_eq!(
             cache.query_point(4_999_999_999),
-            HashSet::from([&row_x])
+            HashSet::from([&tag_set_x])
         );
     }
 
@@ -503,22 +473,19 @@ mod tests {
     fn test_resolution_range_query() {
         use std::time::Duration;
 
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
-        let mut values_b = BTreeMap::new();
-        values_b.insert("tag1".to_string(), "B".to_string());
-        let row_b = RecordBatchRow { values: values_b };
+        let mut tag_set_b = BTreeSet::new();
+        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
 
-        let mut values_c = BTreeMap::new();
-        values_c.insert("tag1".to_string(), "C".to_string());
-        let row_c = RecordBatchRow { values: values_c };
+        let mut tag_set_c = BTreeSet::new();
+        tag_set_c.insert(("tag1".to_string(), "C".to_string()));
 
         let data = vec![
-            (0, row_a.clone()),              // Bucket 0
-            (5_000_000_000, row_b.clone()),  // Bucket 5000000000
-            (10_000_000_000, row_c.clone()), // Bucket 10000000000
+            (0, tag_set_a.clone()),              // Bucket 0
+            (5_000_000_000, tag_set_b.clone()),  // Bucket 5000000000
+            (10_000_000_000, tag_set_c.clone()), // Bucket 10000000000
         ];
 
         let cache = ValueAwareLapperCache::from_sorted_with_resolution(
@@ -530,28 +497,27 @@ mod tests {
         // Range query from 0 to 7.5 seconds should return A and B
         let range_values = cache.query_range(0..7_500_000_000);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&row_a));
-        assert!(range_values.contains(&row_b));
+        assert!(range_values.contains(&tag_set_a));
+        assert!(range_values.contains(&tag_set_b));
 
         // Range query from 5 to 15 seconds should return B and C
         let range_values = cache.query_range(5_000_000_000..15_000_000_000);
         assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&row_b));
-        assert!(range_values.contains(&row_c));
+        assert!(range_values.contains(&tag_set_b));
+        assert!(range_values.contains(&tag_set_c));
     }
 
     #[test]
     fn test_nanosecond_resolution_backward_compat() {
         use std::time::Duration;
 
-        let mut values_a = BTreeMap::new();
-        values_a.insert("tag1".to_string(), "A".to_string());
-        let row_a = RecordBatchRow { values: values_a };
+        let mut tag_set_a = BTreeSet::new();
+        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
 
         let data = vec![
-            (0, row_a.clone()),
-            (1, row_a.clone()),
-            (2, row_a.clone()),
+            (0, tag_set_a.clone()),
+            (1, tag_set_a.clone()),
+            (2, tag_set_a.clone()),
         ];
 
         // Explicitly using nanosecond resolution should work the same as default

@@ -166,7 +166,7 @@ fn bench_build(c: &mut Criterion) {
             bench_cache_build!(LapperCache<TagSet>, "LapperCache");
 
             // ValueAwareLapperCache now works with TagSet
-            bench_cache_build!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
+            bench_cache_build!(ValueAwareLapperCache, "ValueAwareLapperCache");
 
             bench_cache_build!(BTreeCache<TagSet>, "BTreeCache");
             bench_cache_build!(NCListCache<TagSet>, "NCListCache");
@@ -231,7 +231,7 @@ fn bench_append(c: &mut Criterion) {
             bench_cache_append!(LapperCache<TagSet>, "LapperCache");
 
             // ValueAwareLapperCache now works with TagSet
-            bench_cache_append!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
+            bench_cache_append!(ValueAwareLapperCache, "ValueAwareLapperCache");
 
             bench_cache_append!(BTreeCache<TagSet>, "BTreeCache");
             bench_cache_append!(NCListCache<TagSet>, "NCListCache");
@@ -315,7 +315,7 @@ fn bench_point_queries(c: &mut Criterion) {
             bench_cache_hits_misses!(LapperCache<TagSet>, "LapperCache");
 
             // ValueAwareLapperCache now works with TagSet
-            bench_cache_hits_misses!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
+            bench_cache_hits_misses!(ValueAwareLapperCache, "ValueAwareLapperCache");
 
             bench_cache_hits_misses!(BTreeCache<TagSet>, "BTreeCache");
             bench_cache_hits_misses!(NCListCache<TagSet>, "NCListCache");
@@ -391,7 +391,7 @@ fn bench_range_queries(c: &mut Criterion) {
             bench_cache_range!(LapperCache<TagSet>, "LapperCache");
 
             // ValueAwareLapperCache now works with TagSet
-            bench_cache_range!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
+            bench_cache_range!(ValueAwareLapperCache, "ValueAwareLapperCache");
 
             bench_cache_range!(BTreeCache<TagSet>, "BTreeCache");
             bench_cache_range!(NCListCache<TagSet>, "NCListCache");

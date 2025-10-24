@@ -241,7 +241,7 @@ fn bench_build_cache(c: &mut Criterion) {
     for (name, resolution) in &resolutions {
         group.bench_function(format!("{}_resolution", name), |b| {
             // Build cache once to get statistics on first iteration
-            let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+            let cache = ValueAwareLapperCache::from_sorted_with_resolution(
                 sorted_data.clone(),
                 *resolution,
             )
@@ -258,7 +258,7 @@ fn bench_build_cache(c: &mut Criterion) {
             b.iter_batched(
                 || sorted_data.clone(),
                 |data| {
-                    let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+                    let cache = ValueAwareLapperCache::from_sorted_with_resolution(
                         data,
                         *resolution,
                     )
@@ -325,7 +325,7 @@ fn bench_query_cache(c: &mut Criterion) {
     for (name, resolution) in &resolutions {
         group.bench_function(BenchmarkId::new("range_10pct", name), |b| {
             // Build cache for this resolution
-            let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+            let cache = ValueAwareLapperCache::from_sorted_with_resolution(
                 sorted_data.clone(),
                 *resolution,
             )
@@ -381,7 +381,7 @@ fn bench_append_cache(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     (
-                        ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
+                        ValueAwareLapperCache::from_sorted_with_resolution(
                             sorted_initial.clone(),
                             *resolution,
                         )

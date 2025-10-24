@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tag_values_cache::{
-    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, RecordBatchRow,
-    SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_rows_from_batch,
+    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, TagSet,
+    SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_tags_from_batch,
 };
 
 fn print_usage() {
@@ -180,8 +180,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            let rows = extract_rows_from_batch(&batch);
-            all_data.extend(rows);
+            let tags = extract_tags_from_batch(&batch);
+            all_data.extend(tags);
 
             // Trim to exactly total_rows if we went over
             if let Some(limit) = total_rows
@@ -201,27 +201,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Filter to only keep the 4 optimal tag columns
     println!("\nFiltering to only 4 tag columns: WithHash, CounterID, CookieEnable, URLHash");
-    let filtered_data: Vec<(u64, RecordBatchRow)> = all_data
+    let filtered_data: Vec<(u64, TagSet)> = all_data
         .into_iter()
-        .map(|(ts, row)| {
-            // Create a new RecordBatchRow with only the 4 columns
-            let mut filtered_values = std::collections::BTreeMap::new();
+        .map(|(ts, tag_set)| {
+            // Create a new TagSet with only the 4 columns
+            let mut filtered_set = TagSet::new();
 
             // Only keep WithHash, CounterID, CookieEnable, and URLHash
-            if let Some(v) = row.values.get("WithHash") {
-                filtered_values.insert("WithHash".to_string(), v.clone());
-            }
-            if let Some(v) = row.values.get("CounterID") {
-                filtered_values.insert("CounterID".to_string(), v.clone());
-            }
-            if let Some(v) = row.values.get("CookieEnable") {
-                filtered_values.insert("CookieEnable".to_string(), v.clone());
-            }
-            if let Some(v) = row.values.get("URLHash") {
-                filtered_values.insert("URLHash".to_string(), v.clone());
+            for (key, value) in &tag_set {
+                if key == "WithHash" || key == "CounterID" || key == "CookieEnable" || key == "URLHash" {
+                    filtered_set.insert((key.clone(), value.clone()));
+                }
             }
 
-            (ts, RecordBatchRow::new(filtered_values))
+            (ts, filtered_set)
         })
         .collect();
 
@@ -282,7 +275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Benchmark ValueAwareLapperCache
     println!("Building ValueAwareLapperCache...");
     let start = Instant::now();
-    let mut value_aware_lapper_cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted(sorted_data1.clone())?;
+    let mut value_aware_lapper_cache = ValueAwareLapperCache::from_sorted(sorted_data1.clone())?;
     let value_lapper_build_time = start.elapsed();
     println!(
         "  ValueAwareLapperCache: {}",
