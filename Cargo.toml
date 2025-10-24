@@ -16,6 +16,7 @@ num-traits = "0.2"
 parquet = { version = "55.2", features = ["arrow"] }
 rust-lapper = "1.2.0"
 thiserror = "2.0.17"
+arrow_util = { path = "../influxdb_iox/arrow_util" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

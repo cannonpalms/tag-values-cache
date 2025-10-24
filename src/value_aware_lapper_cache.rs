@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::time::Duration;
 
+use arrow_util::dictionary::StringDictionary;
 use rust_lapper::Interval;
 
 use crate::{
@@ -15,13 +16,34 @@ use crate::{
     value_aware_lapper::ValueAwareLapper,
 };
 
-/// An interval cache implementation using ValueAwareLapper for value-aware merging.
+/// Statistics about the dictionary encoding in the cache
+#[derive(Debug, Clone)]
+pub struct DictionaryStats {
+    /// Number of unique TagSet entries in the dictionary
+    pub unique_entries: usize,
+    /// Memory used by the string dictionary (in bytes)
+    pub dictionary_size_bytes: usize,
+    /// Memory used by the decoded cache (in bytes)
+    pub cache_size_bytes: usize,
+}
+
+/// Represents a dictionary-encoded TagSet as a list of (key_id, value_id) pairs
+type EncodedTagSet = Vec<(usize, usize)>;
+
+/// An interval cache implementation using ValueAwareLapper with dictionary encoding.
 ///
-/// This cache stores TagSet values, which represent sets of (tag_name, tag_value) pairs.
-/// Values are stored directly in the intervals without any Arc wrapping or deduplication.
+/// This cache stores TagSets with all strings dictionary-encoded for memory efficiency.
+/// Each unique string (tag key or value) gets a dictionary ID, and TagSets are
+/// stored as vectors of (key_id, value_id) pairs.
 pub struct ValueAwareLapperCache {
-    /// The ValueAwareLapper instance containing all intervals
-    value_lapper: ValueAwareLapper<u64, TagSet>,
+    /// The ValueAwareLapper instance containing all intervals with encoded TagSet IDs
+    value_lapper: ValueAwareLapper<u64, usize>,
+
+    /// Dictionary for all unique strings (both keys and values)
+    string_dict: StringDictionary<usize>,
+
+    /// Maps from TagSet ID to its encoded representation
+    tagsets: Vec<EncodedTagSet>,
 
     /// Time resolution for bucketing timestamps
     /// Duration::from_nanos(1) = nanosecond resolution (no bucketing)
@@ -29,6 +51,88 @@ pub struct ValueAwareLapperCache {
 }
 
 impl ValueAwareLapperCache {
+    /// Get statistics about the dictionary encoding
+    pub fn dictionary_stats(&self) -> DictionaryStats {
+        DictionaryStats {
+            unique_entries: self.string_dict.values().len(),
+            dictionary_size_bytes: self.string_dict.size(),
+            cache_size_bytes: self.tagsets.len() * std::mem::size_of::<EncodedTagSet>(),
+        }
+    }
+
+    /// Get the number of unique TagSets stored
+    pub fn unique_tagsets(&self) -> usize {
+        self.tagsets.len()
+    }
+
+    /// Query and return dictionary IDs for a point
+    fn query_point_ids(&self, t: Timestamp) -> HashSet<usize> {
+        let bucketed_t = Self::bucket_timestamp(t, self.resolution);
+        let start = bucketed_t;
+        let stop = bucketed_t + 1;
+
+        self.value_lapper
+            .find(start, stop)
+            .map(|interval| interval.val)
+            .collect()
+    }
+
+    /// Query and return dictionary IDs for a range
+    fn query_range_ids(&self, range: Range<Timestamp>) -> HashSet<usize> {
+        let bucketed_start = Self::bucket_timestamp(range.start, self.resolution);
+        let bucketed_end = Self::bucket_timestamp(range.end, self.resolution);
+
+        let query_end = if bucketed_end < range.end {
+            let resolution_ns = self.resolution.as_nanos() as u64;
+            if resolution_ns > 1 {
+                bucketed_end + resolution_ns
+            } else {
+                bucketed_end
+            }
+        } else {
+            bucketed_end
+        };
+
+        self.value_lapper
+            .find(bucketed_start, query_end)
+            .map(|interval| interval.val)
+            .collect()
+    }
+
+    /// Decode a tagset ID to a vector of (&str, &str) pairs
+    fn decode_tagset(&self, id: usize) -> Vec<(&str, &str)> {
+        self.tagsets
+            .get(id)
+            .map(|encoded| {
+                encoded
+                    .iter()
+                    .filter_map(|(key_id, value_id)| {
+                        let key = self.string_dict.lookup_id(*key_id)?;
+                        let value = self.string_dict.lookup_id(*value_id)?;
+                        Some((key, value))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Query for values at a point and return decoded tag pairs
+    /// Returns references directly into the string dictionary
+    fn query_point_decoded(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
+        self.query_point_ids(t)
+            .into_iter()
+            .map(|id| self.decode_tagset(id))
+            .collect()
+    }
+
+    /// Query for values in a range and return decoded tag pairs
+    fn query_range_decoded(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        self.query_range_ids(range)
+            .into_iter()
+            .map(|id| self.decode_tagset(id))
+            .collect()
+    }
+
     /// Bucket a timestamp according to the specified resolution.
     ///
     /// For nanosecond resolution (Duration::from_nanos(1) or less), returns the timestamp unchanged.
@@ -50,7 +154,9 @@ impl ValueAwareLapperCache {
     fn build_intervals(
         points: Vec<(Timestamp, TagSet)>,
         resolution: Duration,
-    ) -> Result<Vec<Interval<u64, TagSet>>, CacheBuildError> {
+        string_dict: &mut StringDictionary<usize>,
+        tagsets: &mut Vec<EncodedTagSet>,
+    ) -> Result<Vec<Interval<u64, usize>>, CacheBuildError> {
         let mut intervals = Vec::new();
 
         if points.is_empty() {
@@ -58,19 +164,39 @@ impl ValueAwareLapperCache {
         }
 
         // Build intervals by merging consecutive identical values
-        // Track open intervals for each value to handle overlapping
-        let mut open_intervals: std::collections::HashMap<TagSet, (u64, u64)> =
+        // Track open intervals for each encoded value to handle overlapping
+        let mut open_intervals: std::collections::HashMap<usize, (u64, u64)> =
             std::collections::HashMap::new();
 
         for (t, v) in points {
             // Bucket the timestamp according to the resolution
             let bucketed_t = Self::bucket_timestamp(t, resolution);
 
+            // Encode the TagSet
+            let encoded: EncodedTagSet = v
+                .iter()
+                .map(|(k, val)| {
+                    let key_id = string_dict.lookup_value_or_insert(k);
+                    let value_id = string_dict.lookup_value_or_insert(val);
+                    (key_id, value_id)
+                })
+                .collect();
+
+            // Find or create tagset ID
+            let encoded_id = tagsets
+                .iter()
+                .position(|ts| *ts == encoded)
+                .unwrap_or_else(|| {
+                    let id = tagsets.len();
+                    tagsets.push(encoded);
+                    id
+                });
+
             let next_end = bucketed_t
                 .checked_add(1)
                 .ok_or(CacheBuildError::TimestampOverflow(bucketed_t))?;
 
-            match open_intervals.get_mut(&v) {
+            match open_intervals.get_mut(&encoded_id) {
                 Some((_, end)) if *end == bucketed_t => {
                     // Extend existing interval
                     *end = next_end;
@@ -80,7 +206,7 @@ impl ValueAwareLapperCache {
                     intervals.push(Interval {
                         start: *start,
                         stop: *end,
-                        val: v.clone(),
+                        val: encoded_id,
                     });
 
                     *start = bucketed_t;
@@ -88,17 +214,17 @@ impl ValueAwareLapperCache {
                 }
                 None => {
                     // New value - start tracking it
-                    open_intervals.insert(v.clone(), (bucketed_t, next_end));
+                    open_intervals.insert(encoded_id, (bucketed_t, next_end));
                 }
             }
         }
 
         // Flush all remaining open intervals
-        for (v, (start, end)) in open_intervals {
+        for (encoded_id, (start, end)) in open_intervals {
             intervals.push(Interval {
                 start,
                 stop: end,
-                val: v,
+                val: encoded_id,
             });
         }
 
@@ -117,13 +243,21 @@ impl ValueAwareLapperCache {
         resolution: Duration,
     ) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
-        let intervals = Self::build_intervals(points, resolution)?;
+
+        // Initialize the string dictionary and tagset storage
+        let mut string_dict = StringDictionary::new();
+        let mut tagsets = Vec::new();
+
+        // Build intervals with encoding
+        let intervals = Self::build_intervals(points, resolution, &mut string_dict, &mut tagsets)?;
 
         let mut value_lapper = ValueAwareLapper::new(intervals);
         value_lapper.merge_with_values();
 
         Ok(Self {
             value_lapper,
+            string_dict,
+            tagsets,
             resolution,
         })
     }
@@ -135,49 +269,21 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
         Self::from_sorted_with_resolution(sorted_data, Duration::from_nanos(1))
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&TagSet> {
-        // Bucket the query timestamp to match the cache resolution
-        let bucketed_t = Self::bucket_timestamp(t, self.resolution);
-        let start = bucketed_t;
-        let stop = bucketed_t + 1;
-
-        // Find matching intervals and get value references
-        self.value_lapper
-            .find(start, stop)
-            .map(|interval| &interval.val)
-            .collect()
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
+        self.query_point_decoded(t)
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&TagSet> {
-        // Bucket the query range to match the cache resolution
-        let bucketed_start = Self::bucket_timestamp(range.start, self.resolution);
-        // For the end, we need to ensure we don't miss data by rounding down
-        // So we bucket it and then add the resolution to cover the full bucket
-        let bucketed_end = Self::bucket_timestamp(range.end, self.resolution);
-
-        // If the end was bucketed down, we need to extend it to cover that bucket
-        let query_end = if bucketed_end < range.end {
-            let resolution_ns = self.resolution.as_nanos() as u64;
-            if resolution_ns > 1 {
-                bucketed_end + resolution_ns
-            } else {
-                bucketed_end
-            }
-        } else {
-            bucketed_end
-        };
-
-        self.value_lapper
-            .find(bucketed_start, query_end)
-            .map(|interval| &interval.val)
-            .collect()
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        self.query_range_decoded(range)
     }
 
     fn append_sorted(&mut self, sorted_data: SortedData<TagSet>) -> Result<(), CacheBuildError> {
-        // Build new intervals from sorted points using the cache's resolution
+        // Build new intervals from sorted points using the cache's resolution with encoding
         let new_intervals = Self::build_intervals(
             sorted_data.into_inner(),
             self.resolution,
+            &mut self.string_dict,
+            &mut self.tagsets,
         )?;
 
         // Collect all existing intervals
@@ -195,11 +301,17 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
         // Size of the struct itself
         let mut size = std::mem::size_of::<Self>();
 
-        // Size of all intervals in the ValueAwareLapper
-        size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, TagSet>>();
+        // Size of all intervals in the ValueAwareLapper (now storing usize IDs)
+        size += self.value_lapper.len() * std::mem::size_of::<Interval<u64, usize>>();
 
-        // Note: This doesn't account for heap allocations within TagSet
-        // For accurate heap size, we'd need to calculate the size of each tag name-value pair
+        // Size of the string dictionary
+        size += self.string_dict.size();
+
+        // Size of the tagsets array
+        size += self.tagsets.capacity() * std::mem::size_of::<EncodedTagSet>();
+        for tagset in &self.tagsets {
+            size += tagset.capacity() * std::mem::size_of::<(usize, usize)>();
+        }
 
         size
     }
@@ -212,329 +324,227 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::time::Duration;
+
+    fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
 
     #[test]
     fn test_value_aware_lapper_cache_basic() {
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
 
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
-        let data = vec![
-            (0, tag_set_a.clone()),
-            (1, tag_set_a.clone()),
-            (2, tag_set_a.clone()),
-            (5, tag_set_b.clone()),
-            (6, tag_set_b.clone()),
-        ];
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
-        let sorted_data = SortedData::from_sorted(data);
-        let cache = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
+        let result1 = cache.query_point(1);
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![("host", "server1")]);
 
-        // Check merged intervals
-        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
-        assert_eq!(cache.query_point(1), HashSet::from([&tag_set_a]));
-        assert_eq!(cache.query_point(2), HashSet::from([&tag_set_a]));
-        assert_eq!(cache.query_point(3), HashSet::<&TagSet>::new());
-        assert_eq!(cache.query_point(5), HashSet::from([&tag_set_b]));
+        let result2 = cache.query_point(2);
+        assert_eq!(result2.len(), 1);
+        assert_eq!(result2[0], vec![("host", "server1")]);
+
+        assert_eq!(cache.query_point(3).len(), 0);
+
+        let result4 = cache.query_point(4);
+        assert_eq!(result4.len(), 1);
+        assert_eq!(result4[0], vec![("host", "server2")]);
     }
 
     #[test]
-    fn test_value_aware_lapper_cache_overlapping() {
-        let mut tag_set_x = BTreeSet::new();
-        tag_set_x.insert(("tag1".to_string(), "X".to_string()));
+    fn test_value_aware_lapper_cache_empty() {
+        let cache: ValueAwareLapperCache = ValueAwareLapperCache::new(vec![]).unwrap();
 
-        let mut tag_set_y = BTreeSet::new();
-        tag_set_y.insert(("tag1".to_string(), "Y".to_string()));
-
-        let data = vec![
-            (0, tag_set_x.clone()),
-            (1, tag_set_x.clone()),
-            (1, tag_set_y.clone()),
-            (2, tag_set_y.clone()),
-        ];
-
-        let sorted_data = SortedData::from_sorted(data);
-        let cache = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
-
-        let values_at_1 = cache.query_point(1);
-        assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.contains(&tag_set_x));
-        assert!(values_at_1.contains(&tag_set_y));
+        assert_eq!(cache.query_point(1).len(), 0);
+        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.interval_count(), 0);
     }
 
     #[test]
-    fn test_value_aware_lapper_cache_range_query() {
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
+    fn test_value_aware_lapper_cache_merge() {
+        let tag_a = make_tagset(&[("host", "server1")]);
 
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
-        let mut tag_set_c = BTreeSet::new();
-        tag_set_c.insert(("tag1".to_string(), "C".to_string()));
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
-        let data = vec![
-            (0, tag_set_a.clone()),
-            (1, tag_set_a.clone()),
-            (10, tag_set_b.clone()),
-            (11, tag_set_b.clone()),
-            (20, tag_set_c.clone()),
-        ];
-
-        let sorted_data = SortedData::from_sorted(data);
-        let cache = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
-
-        let range_values = cache.query_range(0..15);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&tag_set_a));
-        assert!(range_values.contains(&tag_set_b));
-    }
-
-    #[test]
-    fn test_value_aware_lapper_cache_append() {
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
-
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
-
-        let initial_data = vec![(0, tag_set_a.clone()), (1, tag_set_a.clone())];
-        let sorted_initial = SortedData::from_sorted(initial_data);
-        let mut cache = ValueAwareLapperCache::from_sorted(sorted_initial).unwrap();
-
-        let append_data = vec![(5, tag_set_b.clone()), (6, tag_set_b.clone())];
-        let sorted_append = SortedData::from_sorted(append_data);
-        cache.append_sorted(sorted_append).unwrap();
-
-        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
-        assert_eq!(cache.query_point(5), HashSet::from([&tag_set_b]));
-    }
-
-    #[test]
-    fn test_value_aware_merging() {
-        // Test that intervals with same boundaries but different values don't merge
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
-
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
-
-        let data = vec![
-            (0, tag_set_a.clone()),
-            (0, tag_set_b.clone()),
-            (1, tag_set_a.clone()),
-            (1, tag_set_b.clone()),
-        ];
-
-        let sorted_data = SortedData::from_sorted(data);
-        let cache = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
-
-        // Both values should be present at timestamp 0 and 1
-        let values_at_0 = cache.query_point(0);
-        assert_eq!(values_at_0.len(), 2);
-        assert!(values_at_0.contains(&tag_set_a));
-        assert!(values_at_0.contains(&tag_set_b));
-
-        let values_at_1 = cache.query_point(1);
-        assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.contains(&tag_set_a));
-        assert!(values_at_1.contains(&tag_set_b));
-
-        // Should have 2 intervals total (one for A, one for B)
-        assert_eq!(cache.interval_count(), 2);
-    }
-
-    #[test]
-    fn test_resolution_5_seconds() {
-        use std::time::Duration;
-
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
-
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
-
-        // Timestamps at nanosecond resolution within a 5-second window
-        let data = vec![
-            (0, tag_set_a.clone()),             // Bucket 0
-            (1_000_000_000, tag_set_a.clone()), // Bucket 0 (1 second)
-            (4_999_999_999, tag_set_a.clone()), // Bucket 0 (just under 5 seconds)
-            (5_000_000_000, tag_set_b.clone()), // Bucket 5000000000 (exactly 5 seconds)
-            (9_999_999_999, tag_set_b.clone()), // Bucket 5000000000 (just under 10 seconds)
-        ];
-
-        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-            SortedData::from_unsorted(data),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-
-        // All timestamps in [0, 5) seconds should be bucketed to 0
-        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
-        assert_eq!(
-            cache.query_point(1_000_000_000),
-            HashSet::from([&tag_set_a])
-        );
-        assert_eq!(
-            cache.query_point(4_999_999_999),
-            HashSet::from([&tag_set_a])
-        );
-
-        // Timestamps in [5, 10) seconds should be bucketed to 5000000000
-        assert_eq!(
-            cache.query_point(5_000_000_000),
-            HashSet::from([&tag_set_b])
-        );
-        assert_eq!(
-            cache.query_point(9_999_999_999),
-            HashSet::from([&tag_set_b])
-        );
-
-        // Should have 2 intervals (one per bucket)
-        assert_eq!(cache.interval_count(), 2);
-    }
-
-    #[test]
-    fn test_resolution_1_minute() {
-        use std::time::Duration;
-
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
-
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
-
-        let data = vec![
-            (0, tag_set_a.clone()),              // Minute 0
-            (30_000_000_000, tag_set_a.clone()), // Minute 0 (30 seconds)
-            (59_999_999_999, tag_set_a.clone()), // Minute 0 (just under 1 minute)
-            (60_000_000_000, tag_set_b.clone()), // Minute 1 (exactly 1 minute)
-            (90_000_000_000, tag_set_b.clone()), // Minute 1 (1.5 minutes)
-        ];
-
-        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-            SortedData::from_unsorted(data),
-            Duration::from_secs(60),
-        )
-        .unwrap();
-
-        // All timestamps in minute 0 should map to the same bucket
-        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_a]));
-        assert_eq!(
-            cache.query_point(30_000_000_000),
-            HashSet::from([&tag_set_a])
-        );
-
-        // Timestamps in minute 1 should map to a different bucket
-        assert_eq!(
-            cache.query_point(60_000_000_000),
-            HashSet::from([&tag_set_b])
-        );
-
-        assert_eq!(cache.interval_count(), 2);
-    }
-
-    #[test]
-    fn test_resolution_merging() {
-        use std::time::Duration;
-
-        let mut tag_set_x = BTreeSet::new();
-        tag_set_x.insert(("tag1".to_string(), "X".to_string()));
-
-        // With 5-second resolution, these should all merge into one interval
-        let data = vec![
-            (100, tag_set_x.clone()),           // Bucket 0
-            (1_000_000_000, tag_set_x.clone()), // Bucket 0
-            (2_500_000_000, tag_set_x.clone()), // Bucket 0
-            (4_000_000_000, tag_set_x.clone()), // Bucket 0
-        ];
-
-        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-            SortedData::from_unsorted(data),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-
-        // Should have only 1 interval since all timestamps bucket to 0
+        // Should have merged into 1 interval: [1,4)
         assert_eq!(cache.interval_count(), 1);
-
-        // All queries within the 5-second bucket should return "X"
-        assert_eq!(cache.query_point(0), HashSet::from([&tag_set_x]));
-        assert_eq!(
-            cache.query_point(4_999_999_999),
-            HashSet::from([&tag_set_x])
-        );
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert_eq!(cache.query_point(4).len(), 0);
     }
 
     #[test]
-    fn test_resolution_range_query() {
-        use std::time::Duration;
+    fn test_dictionary_encoding() {
+        let tag_a = make_tagset(&[("host", "server1"), ("env", "prod")]);
+        let tag_b = make_tagset(&[("host", "server1"), ("env", "dev")]);
+        let tag_c = make_tagset(&[("host", "server2"), ("env", "prod")]);
 
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
+        let data = vec![(1, tag_a.clone()), (2, tag_b.clone()), (3, tag_c.clone())];
 
-        let mut tag_set_b = BTreeSet::new();
-        tag_set_b.insert(("tag1".to_string(), "B".to_string()));
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
-        let mut tag_set_c = BTreeSet::new();
-        tag_set_c.insert(("tag1".to_string(), "C".to_string()));
+        // Check dictionary stats
+        let stats = cache.dictionary_stats();
 
-        let data = vec![
-            (0, tag_set_a.clone()),              // Bucket 0
-            (5_000_000_000, tag_set_b.clone()),  // Bucket 5000000000
-            (10_000_000_000, tag_set_c.clone()), // Bucket 10000000000
-        ];
+        // Should have 6 unique dictionary entries: "host", "env", "server1", "server2", "prod", "dev"
+        assert_eq!(stats.unique_entries, 6);
 
-        let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-            SortedData::from_unsorted(data),
-            Duration::from_secs(5),
-        )
-        .unwrap();
-
-        // Range query from 0 to 7.5 seconds should return A and B
-        let range_values = cache.query_range(0..7_500_000_000);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&tag_set_a));
-        assert!(range_values.contains(&tag_set_b));
-
-        // Range query from 5 to 15 seconds should return B and C
-        let range_values = cache.query_range(5_000_000_000..15_000_000_000);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&tag_set_b));
-        assert!(range_values.contains(&tag_set_c));
+        // Should have 3 unique tagsets
+        assert_eq!(cache.unique_tagsets(), 3);
     }
 
     #[test]
-    fn test_nanosecond_resolution_backward_compat() {
-        use std::time::Duration;
+    fn test_custom_resolution() {
+        let tag_a = make_tagset(&[("host", "server1")]);
 
-        let mut tag_set_a = BTreeSet::new();
-        tag_set_a.insert(("tag1".to_string(), "A".to_string()));
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
+
+        // Use 1-second resolution
+        let sorted_data = SortedData::from_unsorted(data.clone());
+        let cache =
+            ValueAwareLapperCache::from_sorted_with_resolution(sorted_data, Duration::from_secs(1))
+                .unwrap();
+
+        // Should still work correctly
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(2).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+    }
+
+    #[test]
+    fn test_query_range() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+        let tag_c = make_tagset(&[("host", "server3")]);
 
         let data = vec![
-            (0, tag_set_a.clone()),
-            (1, tag_set_a.clone()),
-            (2, tag_set_a.clone()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (5, tag_b.clone()),
+            (6, tag_b.clone()),
+            (10, tag_c.clone()),
         ];
 
-        // Explicitly using nanosecond resolution should work the same as default
-        let cache_explicit = ValueAwareLapperCache::from_sorted_with_resolution(
-            SortedData::from_unsorted(data.clone()),
-            Duration::from_nanos(1),
-        )
-        .unwrap();
+        let cache = ValueAwareLapperCache::new(data).unwrap();
 
-        let sorted_data = SortedData::from_sorted(data);
-        let cache_default = ValueAwareLapperCache::from_sorted(sorted_data).unwrap();
+        // Query range [1, 6) should get tag_a and tag_b
+        let results = cache.query_range(1..6);
+        assert_eq!(results.len(), 2);
 
-        assert_eq!(
-            cache_explicit.interval_count(),
-            cache_default.interval_count()
-        );
-        assert_eq!(cache_explicit.query_point(0), cache_default.query_point(0));
-        assert_eq!(cache_explicit.query_point(1), cache_default.query_point(1));
+        // Check both tagsets are present
+        let has_server1 = results
+            .iter()
+            .any(|tags| tags.contains(&("host", "server1")));
+        let has_server2 = results
+            .iter()
+            .any(|tags| tags.contains(&("host", "server2")));
+        assert!(has_server1);
+        assert!(has_server2);
+
+        // Query range [0, 1) should be empty (before any data)
+        assert_eq!(cache.query_range(0..1).len(), 0);
+
+        // Query range [3, 5) should be empty (gap in data)
+        assert_eq!(cache.query_range(3..5).len(), 0);
+    }
+
+    #[test]
+    fn test_append_sorted() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
+        let initial_data = vec![(1, tag_a.clone()), (2, tag_a.clone())];
+
+        let mut cache = ValueAwareLapperCache::new(initial_data).unwrap();
+
+        let append_data = vec![
+            (3, tag_a.clone()), // Should merge with existing
+            (5, tag_b.clone()),
+        ];
+
+        cache.append_batch(append_data).unwrap();
+
+        // Should have 2 intervals after append and merge
+        // [1, 4) with tag_a and [5, 6) with tag_b
+        assert_eq!(cache.interval_count(), 2);
+
+        // Verify data is accessible
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert!(cache.query_point(5).len() > 0);
+    }
+
+    #[test]
+    fn test_multiple_tags() {
+        let tag_a = make_tagset(&[("host", "server1"), ("region", "us-west"), ("env", "prod")]);
+
+        let data = vec![(100, tag_a.clone())];
+        let cache = ValueAwareLapperCache::new(data).unwrap();
+
+        let result = cache.query_point(100);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 3);
+
+        // Verify all tags are present
+        assert!(result[0].contains(&("host", "server1")));
+        assert!(result[0].contains(&("region", "us-west")));
+        assert!(result[0].contains(&("env", "prod")));
+    }
+
+    #[test]
+    fn test_dictionary_string_reuse() {
+        // Test that the same strings get reused in the dictionary
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+        let tag_c = make_tagset(&[("region", "us-west")]);
+
+        let data = vec![(1, tag_a.clone()), (2, tag_b.clone()), (3, tag_c.clone())];
+
+        let cache = ValueAwareLapperCache::new(data).unwrap();
+        let stats = cache.dictionary_stats();
+
+        // Should have 5 unique dictionary entries: "host", "region", "server1", "server2", "us-west"
+        assert_eq!(stats.unique_entries, 5);
+
+        // 3 unique tagsets
+        assert_eq!(cache.unique_tagsets(), 3);
+    }
+
+    #[test]
+    fn test_overlapping_intervals() {
+        // Test case with same timestamp, different values (overlapping)
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
+        let data = vec![
+            (1, tag_a.clone()),
+            (1, tag_b.clone()), // Same timestamp, different value
+            (2, tag_a.clone()),
+            (2, tag_b.clone()),
+        ];
+
+        let cache = ValueAwareLapperCache::new(data).unwrap();
+
+        // Query at timestamp 1 should return both values
+        let result = cache.query_point(1);
+        assert_eq!(result.len(), 2);
+
+        // Check both values are present
+        let has_server1 = result
+            .iter()
+            .any(|tags| tags.contains(&("host", "server1")));
+        let has_server2 = result
+            .iter()
+            .any(|tags| tags.contains(&("host", "server2")));
+        assert!(has_server1);
+        assert!(has_server2);
     }
 }

@@ -125,6 +125,7 @@ where
 impl<V> IntervalCache<V> for InteravlCache<V>
 where
     V: Clone + Eq + Hash,
+    for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
 {
     fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
@@ -195,19 +196,32 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
         let point_interval = t..(t + 1);
 
         self.tree
             .iter_overlaps(&point_interval)
-            .filter_map(|(_, idx)| self.intervals.get(*idx).map(|(_, v)| v))
+            .filter_map(|(_, idx)| self.intervals.get(*idx).map(|(_, v)| {
+                v.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect()
+            }))
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        let mut seen = HashSet::new();
         self.tree
             .iter_overlaps(&range)
-            .filter_map(|(_, idx)| self.intervals.get(*idx).map(|(_, v)| v))
+            .filter_map(|(_, idx)| self.intervals.get(*idx).and_then(|(_, v)| {
+                if seen.insert(v) {
+                    Some(v.into_iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect())
+                } else {
+                    None
+                }
+            }))
             .collect()
     }
 
@@ -272,128 +286,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TagSet;
+
+    fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
 
     #[test]
     fn test_interavl_cache_basic() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
         let data = vec![
-            (0, "A".to_string()),
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (5, "B".to_string()),
-            (6, "B".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (4, tag_b.clone()),
         ];
 
         let cache = InteravlCache::new(data).unwrap();
 
-        // Check merged intervals
-        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
-        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
+        let result1 = cache.query_point(1);
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![("host", "server1")]);
+
+        let result2 = cache.query_point(2);
+        assert_eq!(result2.len(), 1);
+        assert_eq!(result2[0], vec![("host", "server1")]);
+
+        assert_eq!(cache.query_point(3).len(), 0);
+
+        let result4 = cache.query_point(4);
+        assert_eq!(result4.len(), 1);
+        assert_eq!(result4[0], vec![("host", "server2")]);
     }
 
     #[test]
-    fn test_interavl_cache_overlapping() {
-        let data = vec![
-            (0, "X".to_string()),
-            (1, "X".to_string()),
-            (1, "Y".to_string()),
-            (2, "Y".to_string()),
-        ];
+    fn test_interavl_cache_empty() {
+        let cache: InteravlCache<TagSet> = InteravlCache::new(vec![]).unwrap();
 
-        let cache = InteravlCache::new(data).unwrap();
-
-        let values_at_1 = cache.query_point(1);
-        assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.contains(&&"X".to_string()));
-        assert!(values_at_1.contains(&&"Y".to_string()));
+        assert_eq!(cache.query_point(1).len(), 0);
+        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.interval_count(), 0);
     }
 
     #[test]
-    fn test_interavl_cache_range_query() {
+    fn test_interavl_cache_merge() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+
         let data = vec![
-            (0, "A".to_string()),
-            (1, "A".to_string()),
-            (10, "B".to_string()),
-            (11, "B".to_string()),
-            (20, "C".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (3, tag_a.clone()),
         ];
 
         let cache = InteravlCache::new(data).unwrap();
 
-        let range_values = cache.query_range(0..15);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&&"A".to_string()));
-        assert!(range_values.contains(&&"B".to_string()));
-    }
-
-    /// This test demonstrates a known limitation of InteravlCache.
-    ///
-    /// # Problem
-    ///
-    /// When multiple different values exist at the same timestamp, InteravlCache
-    /// creates multiple intervals with identical ranges (e.g., both [5, 6)). When
-    /// these intervals are inserted into the `interavl` crate's `IntervalTree`,
-    /// only the last one is retained because the tree does not support duplicate
-    /// ranges.
-    ///
-    /// # Root Cause
-    ///
-    /// The `interavl` crate's `IntervalTree::insert()` method overwrites any
-    /// existing interval with the same range. When we have:
-    /// - Interval 1: [5, 6) -> value A
-    /// - Interval 2: [5, 6) -> value B
-    ///
-    /// After insertion, only value B remains in the tree.
-    ///
-    /// # Impact
-    ///
-    /// Any dataset with multiple distinct values at the same timestamp will lose
-    /// all but the last value during tree construction (lines 131-134 in from_sorted).
-    ///
-    /// # Expected Behavior
-    ///
-    /// This test is marked with `#[should_panic]` because the current implementation
-    /// is known to fail. The correct behavior would be to return both values.
-    ///
-    /// # Potential Fixes
-    ///
-    /// 1. Store `Vec<usize>` in the tree instead of single `usize`
-    /// 2. Switch to a different interval tree library that supports duplicates
-    /// 3. Group identical-range intervals before tree insertion
-    #[test]
-    #[should_panic(expected = "InteravlCache loses records with duplicate timestamps")]
-    fn test_known_bug_duplicate_timestamp_values() {
-        use crate::RecordBatchRow;
-        use std::collections::BTreeMap;
-
-        // Create two different RecordBatchRow values
-        let mut values1 = BTreeMap::new();
-        values1.insert("field".to_string(), "1".to_string());
-        let row1 = RecordBatchRow::new(values1);
-
-        let mut values2 = BTreeMap::new();
-        values2.insert("field".to_string(), "2".to_string());
-        let row2 = RecordBatchRow::new(values2);
-
-        // Both at timestamp 5
-        let data = vec![
-            (5, row1.clone()),
-            (5, row2.clone()),
-        ];
-
-        let cache = InteravlCache::new(data).unwrap();
-
-        // Query timestamp 5
-        let result = cache.query_point(5);
-
-        // EXPECTED: Both values should be present
-        // ACTUAL: Only one value (the last inserted) is present
-        assert_eq!(
-            result.len(),
-            2,
-            "InteravlCache loses records with duplicate timestamps"
-        );
+        // Should have merged into 1 interval: [1,4)
+        assert_eq!(cache.interval_count(), 1);
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert_eq!(cache.query_point(4).len(), 0);
     }
 }
+

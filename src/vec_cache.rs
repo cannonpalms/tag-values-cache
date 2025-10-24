@@ -91,6 +91,7 @@ where
 impl<V> IntervalCache<V> for VecCache<V>
 where
     V: Clone + Eq + Hash,
+    for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
 {
     fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
@@ -167,8 +168,8 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
-        let mut results = HashSet::new();
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
+        let mut results = Vec::new();
 
         if self.starts.is_empty() {
             return results;
@@ -183,15 +184,19 @@ where
         // But we can stop at first_after since those intervals start after t
         for i in 0..first_after {
             if self.ends[i] > t {
-                results.insert(&self.values[i]);
+                let tag_vec: Vec<(&str, &str)> = self.values[i].into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                results.push(tag_vec);
             }
         }
 
         results
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
-        let mut results = HashSet::new();
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
 
         if self.starts.is_empty() {
             return results;
@@ -211,7 +216,13 @@ where
         // This is actually optimal given our data structure constraints
         for i in 0..first_after {
             if self.ends[i] > range.start {
-                results.insert(&self.values[i]);
+                // Deduplicate based on the value
+                if seen.insert(&self.values[i]) {
+                    let tag_vec: Vec<(&str, &str)> = self.values[i].into_iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect();
+                    results.push(tag_vec);
+                }
             }
         }
 
@@ -306,37 +317,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TagSet;
+
+    fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
 
     #[test]
     fn test_vec_cache_basic() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
         let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (4, "B".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (4, tag_b.clone()),
         ];
 
         let cache = VecCache::new(data).unwrap();
 
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
-        assert_eq!(cache.query_point(4), HashSet::from([&"B".to_string()]));
+        let result1 = cache.query_point(1);
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![("host", "server1")]);
+
+        let result2 = cache.query_point(2);
+        assert_eq!(result2.len(), 1);
+        assert_eq!(result2[0], vec![("host", "server1")]);
+
+        assert_eq!(cache.query_point(3).len(), 0);
+
+        let result4 = cache.query_point(4);
+        assert_eq!(result4.len(), 1);
+        assert_eq!(result4[0], vec![("host", "server2")]);
     }
 
     #[test]
-    fn test_vec_cache_range() {
+    fn test_vec_cache_empty() {
+        let cache: VecCache<TagSet> = VecCache::new(vec![]).unwrap();
+
+        assert_eq!(cache.query_point(1).len(), 0);
+        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.interval_count(), 0);
+    }
+
+    #[test]
+    fn test_vec_cache_merge() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+
         let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (5, "B".to_string()),
-            (6, "C".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (3, tag_a.clone()),
         ];
 
         let cache = VecCache::new(data).unwrap();
 
-        let range_values = cache.query_range(1..6);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&&"A".to_string()));
-        assert!(range_values.contains(&&"B".to_string()));
+        // Should have merged into 1 interval: [1,4)
+        assert_eq!(cache.interval_count(), 1);
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert_eq!(cache.query_point(4).len(), 0);
     }
 }
+

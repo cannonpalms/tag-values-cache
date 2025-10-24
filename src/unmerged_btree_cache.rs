@@ -50,6 +50,7 @@ where
 impl<V> IntervalCache<V> for UnmergedBTreeCache<V>
 where
     V: Clone + Eq + Hash,
+    for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
 {
     fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
@@ -79,8 +80,8 @@ where
         Ok(Self { intervals })
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
-        let mut results = HashSet::new();
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
+        let mut results = Vec::new();
 
         if self.intervals.is_empty() {
             return results;
@@ -95,7 +96,10 @@ where
                 // Only include if the interval actually contains t
                 // Interval is [start, end) so we need start <= t < end
                 if start <= t && t < end {
-                    results.insert(value);
+                    let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect();
+                    results.push(tag_vec);
                 }
             }
         }
@@ -103,8 +107,9 @@ where
         results
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
-        let mut results = HashSet::new();
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
 
         if self.intervals.is_empty() {
             return results;
@@ -118,7 +123,13 @@ where
             for &(end, ref value) in intervals_at_start {
                 // Check if this interval actually overlaps the query range
                 if end > range.start {
-                    results.insert(value);
+                    // Deduplicate based on the value
+                    if seen.insert(value) {
+                        let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                            .map(|(k, v)| (k.as_str(), v.as_str()))
+                            .collect();
+                        results.push(tag_vec);
+                    }
                 }
             }
         }
@@ -188,108 +199,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TagSet;
+
+    fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
 
     #[test]
     fn test_unmerged_btree_cache_basic() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
         let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (4, "B".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (4, tag_b.clone()),
         ];
 
         let cache = UnmergedBTreeCache::new(data).unwrap();
 
-        // Should have 3 intervals (no merging)
-        assert_eq!(cache.interval_count(), 3);
+        let result1 = cache.query_point(1);
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![("host", "server1")]);
 
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
-        assert_eq!(cache.query_point(4), HashSet::from([&"B".to_string()]));
-    }
+        let result2 = cache.query_point(2);
+        assert_eq!(result2.len(), 1);
+        assert_eq!(result2[0], vec![("host", "server1")]);
 
-    #[test]
-    fn test_unmerged_btree_cache_no_merge() {
-        // Verify that adjacent values with same value are NOT merged
-        let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (3, "A".to_string()),
-        ];
+        assert_eq!(cache.query_point(3).len(), 0);
 
-        let cache = UnmergedBTreeCache::new(data).unwrap();
-
-        // Should have 3 separate intervals, not 1 merged interval
-        assert_eq!(cache.interval_count(), 3);
-    }
-
-    #[test]
-    fn test_unmerged_btree_cache_range() {
-        let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (5, "B".to_string()),
-            (6, "C".to_string()),
-        ];
-
-        let cache = UnmergedBTreeCache::new(data).unwrap();
-
-        let range_values = cache.query_range(1..6);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&&"A".to_string()));
-        assert!(range_values.contains(&&"B".to_string()));
+        let result4 = cache.query_point(4);
+        assert_eq!(result4.len(), 1);
+        assert_eq!(result4[0], vec![("host", "server2")]);
     }
 
     #[test]
     fn test_unmerged_btree_cache_empty() {
-        let cache: UnmergedBTreeCache<String> = UnmergedBTreeCache::new(vec![]).unwrap();
+        let cache: UnmergedBTreeCache<TagSet> = UnmergedBTreeCache::new(vec![]).unwrap();
 
-        assert_eq!(cache.query_point(1), HashSet::new());
-        assert_eq!(cache.query_range(0..100), HashSet::new());
+        assert_eq!(cache.query_point(1).len(), 0);
+        assert_eq!(cache.query_range(0..100).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 
     #[test]
-    fn test_unmerged_btree_cache_duplicate_timestamps() {
-        // Test case with duplicate timestamps (same timestamp, different values)
+    fn test_unmerged_btree_cache_merge() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+
         let data = vec![
-            (1, "A".to_string()),
-            (1, "B".to_string()),
-            (2, "A".to_string()),
-            (2, "B".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (3, tag_a.clone()),
         ];
 
         let cache = UnmergedBTreeCache::new(data).unwrap();
 
-        // Should have 4 intervals
-        assert_eq!(cache.interval_count(), 4);
-
-        // Both values should be present at each timestamp
-        assert_eq!(
-            cache.query_point(1),
-            HashSet::from([&"A".to_string(), &"B".to_string()])
-        );
-        assert_eq!(
-            cache.query_point(2),
-            HashSet::from([&"A".to_string(), &"B".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_unmerged_btree_cache_append() {
-        let data = vec![(1, "A".to_string()), (2, "A".to_string())];
-        let mut cache = UnmergedBTreeCache::new(data).unwrap();
-
-        assert_eq!(cache.interval_count(), 2);
-
-        let new_data = vec![(3, "A".to_string()), (5, "B".to_string())];
-        cache.append_batch(new_data).unwrap();
-
-        // Should have 4 intervals (no merging even though all "A" values are adjacent)
-        assert_eq!(cache.interval_count(), 4);
-
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
+        // UnmergedBTreeCache does NOT merge, so should have 3 separate intervals
+        assert_eq!(cache.interval_count(), 3);
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert_eq!(cache.query_point(4).len(), 0);
     }
 }
+

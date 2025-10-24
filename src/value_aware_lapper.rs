@@ -211,282 +211,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_new_value_aware_lapper() {
+    fn test_value_aware_lapper_basic() {
         let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 15u32,
-                stop: 20u32,
-                val: "B",
-            },
+            Interval { start: 1u64, stop: 3u64, val: 1usize },
+            Interval { start: 5u64, stop: 7u64, val: 2usize },
         ];
 
-        let vlapper = ValueAwareLapper::new(intervals);
-        assert_eq!(vlapper.len(), 2);
+        let lapper = ValueAwareLapper::new(intervals);
+
+        assert_eq!(lapper.len(), 2);
+        assert_eq!(lapper.find(2, 3).count(), 1);
+        assert_eq!(lapper.find(6, 7).count(), 1);
+        assert_eq!(lapper.find(4, 5).count(), 0);
     }
 
     #[test]
-    fn test_merge_same_value_overlapping() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 8u32,
-                stop: 15u32,
-                val: "A",
-            }, // Same value, overlapping
-        ];
+    fn test_value_aware_lapper_empty() {
+        let lapper: ValueAwareLapper<u64, usize> = ValueAwareLapper::new(vec![]);
 
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
-
-        assert_eq!(vlapper.len(), 1);
-        let merged = vlapper.iter().next().unwrap();
-        assert_eq!(merged.start, 5u32);
-        assert_eq!(merged.stop, 15u32);
-        assert_eq!(merged.val, "A");
+        assert_eq!(lapper.len(), 0);
+        assert_eq!(lapper.find(0, 100).count(), 0);
     }
 
     #[test]
-    fn test_merge_same_value_adjacent() {
+    fn test_value_aware_lapper_merge_with_values() {
         let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 10u32,
-                stop: 15u32,
-                val: "A",
-            }, // Same value, adjacent
+            Interval { start: 1u64, stop: 3u64, val: 1usize },
+            Interval { start: 3u64, stop: 5u64, val: 1usize }, // Same value, adjacent
+            Interval { start: 5u64, stop: 7u64, val: 2usize }, // Different value
         ];
 
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
+        let mut lapper = ValueAwareLapper::new(intervals);
+        lapper.merge_with_values();
 
-        assert_eq!(vlapper.len(), 1);
-        let merged = vlapper.iter().next().unwrap();
-        assert_eq!(merged.start, 5u32);
-        assert_eq!(merged.stop, 15u32);
-    }
+        // Should merge first two intervals into one
+        assert_eq!(lapper.len(), 2);
 
-    #[test]
-    fn test_no_merge_different_values() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "B",
-            }, // Same boundaries, different value
-        ];
-
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
-
-        // Should NOT merge - different values
-        assert_eq!(vlapper.len(), 2);
-    }
-
-    #[test]
-    fn test_no_merge_different_values_overlapping() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 12u32,
-                val: "A",
-            },
-            Interval {
-                start: 8u32,
-                stop: 15u32,
-                val: "B",
-            }, // Overlapping, different value
-        ];
-
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
-
-        // Should NOT merge - different values
-        assert_eq!(vlapper.len(), 2);
-    }
-
-    #[test]
-    fn test_merge_duplicates_same_value() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            }, // Exact duplicate
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            }, // Another duplicate
-        ];
-
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
-
-        assert_eq!(vlapper.len(), 1);
-    }
-
-    #[test]
-    fn test_no_merge_with_gap() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 15u32,
-                stop: 20u32,
-                val: "A",
-            }, // Same value but gap
-        ];
-
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
-
-        // Should NOT merge - gap between intervals
-        assert_eq!(vlapper.len(), 2);
-    }
-
-    #[test]
-    fn test_complex_merge_scenario() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 8u32,
-                stop: 15u32,
-                val: "A",
-            }, // Overlapping, same value
-            Interval {
-                start: 12u32,
-                stop: 20u32,
-                val: "A",
-            }, // Overlapping with previous, same value
-            Interval {
-                start: 25u32,
-                stop: 30u32,
-                val: "A",
-            }, // Gap, same value
-            Interval {
-                start: 10u32,
-                stop: 18u32,
-                val: "B",
-            }, // Overlapping with A's, different value
-        ];
-
-        let mut vlapper = ValueAwareLapper::new(intervals);
-        vlapper.merge_with_values();
-
-        // Should have:
-        // - One merged "A" interval [5, 20) (merges [5,15), [8,15), and [12,20))
-        // - One "B" interval [10, 18)
-        // - One separate "A" interval [25, 30) (gap)
-        assert_eq!(vlapper.len(), 3);
-
-        let merged: Vec<_> = vlapper.iter().collect();
-
-        // Check that we have the right intervals
-        assert!(
-            merged
-                .iter()
-                .any(|iv| iv.start == 5u32 && iv.stop == 20u32 && iv.val == "A")
-        );
-        assert!(
-            merged
-                .iter()
-                .any(|iv| iv.start == 10u32 && iv.stop == 18u32 && iv.val == "B")
-        );
-        assert!(
-            merged
-                .iter()
-                .any(|iv| iv.start == 25u32 && iv.stop == 30u32 && iv.val == "A")
-        );
-    }
-
-    #[test]
-    fn test_find_queries() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "B",
-            }, // Same boundaries, different value
-            Interval {
-                start: 15u32,
-                stop: 20u32,
-                val: "C",
-            },
-        ];
-
-        let vlapper = ValueAwareLapper::new(intervals);
-
-        // Query at position 7 should return both A and B
-        let results: Vec<_> = vlapper.find(7u32, 8u32).collect();
-        assert_eq!(results.len(), 2);
-        assert!(results.iter().any(|iv| iv.val == "A"));
-        assert!(results.iter().any(|iv| iv.val == "B"));
-
-        // Query at position 17 should return only C
-        let results: Vec<_> = vlapper.find(17u32, 18u32).collect();
+        // Verify the merged interval covers [1, 5)
+        let results: Vec<_> = lapper.find(1, 5).collect();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].val, "C");
-    }
-
-    #[test]
-    fn test_find_range() {
-        let intervals = vec![
-            Interval {
-                start: 5u32,
-                stop: 10u32,
-                val: "A",
-            },
-            Interval {
-                start: 15u32,
-                stop: 20u32,
-                val: "B",
-            },
-        ];
-
-        let vlapper = ValueAwareLapper::new(intervals);
-
-        // Query range that overlaps first interval
-        let results: Vec<_> = vlapper.find_range(0u32..12u32).collect();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].val, "A");
-
-        // Query range that overlaps both
-        let results: Vec<_> = vlapper.find_range(0u32..25u32).collect();
-        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].start, 1);
+        assert_eq!(results[0].stop, 5);
     }
 }

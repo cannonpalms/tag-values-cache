@@ -19,7 +19,7 @@
 //! let values = cache.query_point(2);  // Returns ["A"]
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::Range;
 use std::rc::Rc;
@@ -301,7 +301,7 @@ where
     /// A set of references to all values at the given timestamp.
     /// Returns an empty set if no values exist at that timestamp.
     /// The order of values in the set is unspecified.
-    fn query_point(&self, t: Timestamp) -> HashSet<&V>;
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>>;
 
     /// Query for all values that exist within a time range.
     ///
@@ -314,7 +314,7 @@ where
     /// A set of references to all unique values within the range.
     /// Returns an empty set if no values exist in the range.
     /// The order of values in the set is unspecified.
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V>;
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>>;
 
     /// Append a batch of pre-sorted timestamp-value pairs to the cache.
     ///
@@ -393,6 +393,7 @@ where
     pub fn build_interval_tree(self) -> Result<IntervalTreeCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         IntervalTreeCache::new(self.data)
     }
@@ -401,6 +402,7 @@ where
     pub fn build_vec_cache(self) -> Result<VecCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         VecCache::new(self.data)
     }
@@ -409,6 +411,7 @@ where
     pub fn build_btree_cache(self) -> Result<BTreeCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         BTreeCache::new(self.data)
     }
@@ -417,6 +420,7 @@ where
     pub fn build_lapper_cache(self) -> Result<LapperCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         LapperCache::new(self.data)
     }
@@ -425,6 +429,7 @@ where
     pub fn build_nclist_cache(self) -> Result<NCListCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         NCListCache::new(self.data)
     }
@@ -433,6 +438,7 @@ where
     pub fn build_segment_tree_cache(self) -> Result<SegmentTreeCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         SegmentTreeCache::new(self.data)
     }
@@ -441,6 +447,7 @@ where
     pub fn build_unmerged_btree_cache(self) -> Result<UnmergedBTreeCache<V>, CacheBuildError>
     where
         V: Ord,
+        for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
     {
         UnmergedBTreeCache::new(self.data)
     }

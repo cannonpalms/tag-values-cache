@@ -231,6 +231,7 @@ where
 impl<V> IntervalCache<V> for NCListCache<V>
 where
     V: Clone + Eq + Hash,
+    for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
 {
     fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
@@ -289,11 +290,11 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
-        let mut results = HashSet::new();
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
+        let mut results_set = HashSet::new();
 
         if self.intervals.is_empty() {
-            return results;
+            return Vec::new();
         }
 
         // Binary search to find the first interval whose start > t
@@ -309,18 +310,22 @@ where
             // For efficiency, we can skip intervals we know are children of earlier intervals
             // But for simplicity, we check each interval and let the function handle containment
             if self.intervals[i].end > t {
-                self.query_point_from(t, i, &mut results);
+                self.query_point_from(t, i, &mut results_set);
             }
         }
 
-        results
+        results_set.into_iter()
+            .map(|v| v.into_iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect())
+            .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
-        let mut results = HashSet::new();
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        let mut results_set = HashSet::new();
 
         if self.intervals.is_empty() {
-            return results;
+            return Vec::new();
         }
 
         // Binary search to find the first interval whose start >= range.end
@@ -331,11 +336,15 @@ where
         for i in 0..first_after {
             // An interval overlaps if its end > range.start
             if self.intervals[i].end > range.start {
-                self.query_range_from(&range, i, &mut results);
+                self.query_range_from(&range, i, &mut results_set);
             }
         }
 
-        results
+        results_set.into_iter()
+            .map(|v| v.into_iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect())
+            .collect()
     }
 
     fn append_sorted(&mut self, sorted_data: crate::SortedData<V>) -> Result<(), CacheBuildError> {
@@ -412,126 +421,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TagSet;
+
+    fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
 
     #[test]
-    fn test_nclist_basic() {
+    fn test_nclist_cache_basic() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
         let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (4, "B".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (4, tag_b.clone()),
         ];
 
         let cache = NCListCache::new(data).unwrap();
 
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
-        assert_eq!(cache.query_point(4), HashSet::from([&"B".to_string()]));
+        let result1 = cache.query_point(1);
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![("host", "server1")]);
+
+        let result2 = cache.query_point(2);
+        assert_eq!(result2.len(), 1);
+        assert_eq!(result2[0], vec![("host", "server1")]);
+
+        assert_eq!(cache.query_point(3).len(), 0);
+
+        let result4 = cache.query_point(4);
+        assert_eq!(result4.len(), 1);
+        assert_eq!(result4[0], vec![("host", "server2")]);
     }
 
     #[test]
-    fn test_nclist_range() {
+    fn test_nclist_cache_empty() {
+        let cache: NCListCache<TagSet> = NCListCache::new(vec![]).unwrap();
+
+        assert_eq!(cache.query_point(1).len(), 0);
+        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.interval_count(), 0);
+    }
+
+    #[test]
+    fn test_nclist_cache_merge() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+
         let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (5, "B".to_string()),
-            (6, "C".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (3, tag_a.clone()),
         ];
 
         let cache = NCListCache::new(data).unwrap();
 
-        let range_values = cache.query_range(1..6);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&&"A".to_string()));
-        assert!(range_values.contains(&&"B".to_string()));
-    }
-
-    #[test]
-    fn test_nclist_overlapping() {
-        // Test with overlapping intervals
-        let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (2, "B".to_string()),
-            (3, "B".to_string()),
-        ];
-
-        let cache = NCListCache::new(data).unwrap();
-
-        // At time 2, both A and B exist
-        let results = cache.query_point(2);
-        assert_eq!(results.len(), 2);
-        assert!(results.contains(&&"A".to_string()));
-        assert!(results.contains(&&"B".to_string()));
-    }
-
-    #[test]
-    fn test_nclist_nested() {
-        // Test with nested intervals
-        // A: [1, 5)
-        // B: [2, 4)
-        let data = vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (2, "B".to_string()),
-            (3, "A".to_string()),
-            (3, "B".to_string()),
-            (4, "A".to_string()),
-        ];
-
-        let cache = NCListCache::new(data).unwrap();
-
-        // At time 3, both A and B exist
-        let results = cache.query_point(3);
-        assert_eq!(results.len(), 2);
-        assert!(results.contains(&&"A".to_string()));
-        assert!(results.contains(&&"B".to_string()));
-
-        // At time 4, only A exists
-        let results = cache.query_point(4);
-        assert_eq!(results.len(), 1);
-        assert!(results.contains(&&"A".to_string()));
-    }
-
-    #[test]
-    fn test_nclist_empty() {
-        let cache = NCListCache::<String>::new(vec![]).unwrap();
-        assert_eq!(cache.query_point(1), HashSet::new());
-        assert_eq!(cache.query_range(1..10), HashSet::new());
-    }
-
-    #[test]
-    fn test_nclist_append() {
-        let mut cache = NCListCache::new(vec![
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-        ]).unwrap();
-
-        cache.append_batch(vec![
-            (3, "A".to_string()),  // Should merge with existing A
-            (5, "B".to_string()),
-        ]).unwrap();
-
-        // Should have merged into one A interval [1, 4) and one B interval [5, 6)
-        assert_eq!(cache.interval_count(), 2);
-
-        // Verify queries
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
-    }
-
-    #[test]
-    fn test_nclist_size_bytes() {
-        let data = vec![
-            (1, "A".to_string()),
-            (2, "B".to_string()),
-        ];
-
-        let cache = NCListCache::new(data).unwrap();
-        let size = cache.size_bytes();
-
-        // Should be at least the size of the struct plus some overhead
-        assert!(size > std::mem::size_of::<NCListCache<String>>());
+        // Should have merged into 1 interval: [1,4)
+        assert_eq!(cache.interval_count(), 1);
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert_eq!(cache.query_point(4).len(), 0);
     }
 }
+

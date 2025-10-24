@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs::{self, File};
 use std::path::Path;
@@ -868,8 +869,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             for (name, result) in &results {
                 if result != &majority_result {
-                    let missing: Vec<_> = majority_result.difference(result).collect();
-                    let extra: Vec<_> = result.difference(majority_result).collect();
+                    let majority_set: HashSet<_> = majority_result.iter().collect();
+                    let result_set: HashSet<_> = result.iter().collect();
+                    let missing: Vec<_> = majority_set.difference(&result_set).collect();
+                    let extra: Vec<_> = result_set.difference(&majority_set).collect();
                     print!("    {name}: ");
                     if !missing.is_empty() {
                         print!("missing {:?}", missing);
@@ -944,8 +947,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             for (name, result) in &results {
                 if result != &majority_result {
-                    let missing: Vec<_> = majority_result.difference(result).collect();
-                    let extra: Vec<_> = result.difference(majority_result).collect();
+                    let majority_set: HashSet<_> = majority_result.iter().collect();
+                    let result_set: HashSet<_> = result.iter().collect();
+                    let missing: Vec<_> = majority_set.difference(&result_set).collect();
+                    let extra: Vec<_> = result_set.difference(&majority_set).collect();
                     print!("    {name}: ");
                     if !missing.is_empty() {
                         print!("missing {:?}", missing);

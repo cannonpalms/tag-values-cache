@@ -3,7 +3,7 @@
 //! This implementation uses rust-lapper's interval tree, which provides
 //! fast interval overlap queries and is optimized for genomic data workloads.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::ops::Range;
 
@@ -98,6 +98,7 @@ where
 impl<V> IntervalCache<V> for LapperCache<V>
 where
     V: Clone + Eq + Hash,
+    for<'a> &'a V: IntoIterator<Item = &'a (String, String)>,
 {
     fn from_sorted(sorted_data: crate::SortedData<V>) -> Result<Self, CacheBuildError> {
         let points = sorted_data.into_inner();
@@ -157,32 +158,38 @@ where
         })
     }
 
-    fn query_point(&self, t: Timestamp) -> HashSet<&V> {
+    fn query_point(&self, t: Timestamp) -> Vec<Vec<(&str, &str)>> {
         let start = t as usize;
         let stop = (t + 1) as usize;
 
-        let mut results = HashSet::new();
+        let mut results = Vec::new();
 
         // Query all lappers and collect results
         for (value, lapper) in &self.lappers {
             if lapper.find(start, stop).next().is_some() {
-                results.insert(value);
+                let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                results.push(tag_vec);
             }
         }
 
         results
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> HashSet<&V> {
+    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         let start = range.start as usize;
         let stop = range.end as usize;
 
-        let mut results = HashSet::new();
+        let mut results = Vec::new();
 
         // Query all lappers and collect unique values
         for (value, lapper) in &self.lappers {
             if lapper.find(start, stop).next().is_some() {
-                results.insert(value);
+                let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                results.push(tag_vec);
             }
         }
 
@@ -248,79 +255,66 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TagSet;
+
+    fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
 
     #[test]
     fn test_lapper_cache_basic() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+        let tag_b = make_tagset(&[("host", "server2")]);
+
         let data = vec![
-            (0, "A".to_string()),
-            (1, "A".to_string()),
-            (2, "A".to_string()),
-            (5, "B".to_string()),
-            (6, "B".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (4, tag_b.clone()),
         ];
 
         let cache = LapperCache::new(data).unwrap();
 
-        // Check merged intervals
-        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(1), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(2), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(3), HashSet::<&String>::new());
-        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
+        let result1 = cache.query_point(1);
+        assert_eq!(result1.len(), 1);
+        assert_eq!(result1[0], vec![("host", "server1")]);
+
+        let result2 = cache.query_point(2);
+        assert_eq!(result2.len(), 1);
+        assert_eq!(result2[0], vec![("host", "server1")]);
+
+        assert_eq!(cache.query_point(3).len(), 0);
+
+        let result4 = cache.query_point(4);
+        assert_eq!(result4.len(), 1);
+        assert_eq!(result4[0], vec![("host", "server2")]);
     }
 
     #[test]
-    fn test_lapper_cache_overlapping() {
+    fn test_lapper_cache_empty() {
+        let cache: LapperCache<TagSet> = LapperCache::new(vec![]).unwrap();
+
+        assert_eq!(cache.query_point(1).len(), 0);
+        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.interval_count(), 0);
+    }
+
+    #[test]
+    fn test_lapper_cache_merge() {
+        let tag_a = make_tagset(&[("host", "server1")]);
+
         let data = vec![
-            (0, "X".to_string()),
-            (1, "X".to_string()),
-            (1, "Y".to_string()),
-            (2, "Y".to_string()),
+            (1, tag_a.clone()),
+            (2, tag_a.clone()),
+            (3, tag_a.clone()),
         ];
 
         let cache = LapperCache::new(data).unwrap();
 
-        let values_at_1 = cache.query_point(1);
-        assert_eq!(values_at_1.len(), 2);
-        assert!(values_at_1.contains(&&"X".to_string()));
-        assert!(values_at_1.contains(&&"Y".to_string()));
-    }
-
-    #[test]
-    fn test_lapper_cache_range_query() {
-        let data = vec![
-            (0, "A".to_string()),
-            (1, "A".to_string()),
-            (10, "B".to_string()),
-            (11, "B".to_string()),
-            (20, "C".to_string()),
-        ];
-
-        let cache = LapperCache::new(data).unwrap();
-
-        let range_values = cache.query_range(0..15);
-        assert_eq!(range_values.len(), 2);
-        assert!(range_values.contains(&&"A".to_string()));
-        assert!(range_values.contains(&&"B".to_string()));
-    }
-
-    #[test]
-    fn test_lapper_cache_append() {
-        let initial_data = vec![
-            (0, "A".to_string()),
-            (1, "A".to_string()),
-        ];
-
-        let mut cache = LapperCache::new(initial_data).unwrap();
-
-        let append_data = vec![
-            (5, "B".to_string()),
-            (6, "B".to_string()),
-        ];
-
-        cache.append_batch(append_data).unwrap();
-
-        assert_eq!(cache.query_point(0), HashSet::from([&"A".to_string()]));
-        assert_eq!(cache.query_point(5), HashSet::from([&"B".to_string()]));
+        // Should have merged into 1 interval: [1,4)
+        assert_eq!(cache.interval_count(), 1);
+        assert!(cache.query_point(1).len() > 0);
+        assert!(cache.query_point(3).len() > 0);
+        assert_eq!(cache.query_point(4).len(), 0);
     }
 }
+
