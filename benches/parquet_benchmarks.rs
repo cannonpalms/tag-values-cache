@@ -5,18 +5,18 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 use tag_values_cache::{
-    IntervalCache, RecordBatchRow, SortedData, ValueAwareLapperCache, extract_rows_from_batch,
+    IntervalCache, SortedData, TagSet, ValueAwareLapperCache, extract_tags_from_batch,
 };
 
 use std::collections::HashSet;
 
 /// Calculate cardinality (unique tag combinations) from data
-fn calculate_cardinality(data: &[(u64, RecordBatchRow)]) -> usize {
+fn calculate_cardinality(data: &[(u64, TagSet)]) -> usize {
     let mut unique_combinations = HashSet::new();
 
-    for (_, row) in data {
+    for (_, tag_set) in data {
         let mut combination = Vec::new();
-        for (key, value) in &row.values {
+        for (key, value) in tag_set {
             combination.push(format!("{}={}", key, value));
         }
         combination.sort();
@@ -28,7 +28,7 @@ fn calculate_cardinality(data: &[(u64, RecordBatchRow)]) -> usize {
 
 /// Load data from all parquet files in a directory
 /// Stops when total cardinality reaches 1M or 7 days of data, whichever comes first
-fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchRow)>> {
+fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
     let mut all_data = Vec::new();
     let max_cardinality = 1_000_000;
     let max_duration_ns = 7 * 24 * 60 * 60 * 1_000_000_000u64; // 7 days in nanoseconds
@@ -72,8 +72,8 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
         for batch_result in reader {
             match batch_result {
                 Ok(batch) => {
-                    let rows = extract_rows_from_batch(&batch);
-                    file_data.extend(rows);
+                    let tags = extract_tags_from_batch(&batch);
+                    file_data.extend(tags);
                 }
                 Err(e) => {
                     eprintln!("  Warning: Failed to read batch: {}", e);
@@ -157,7 +157,7 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, RecordBatchR
 }
 
 /// Load the parquet data once and return it
-fn load_parquet_data() -> Option<Vec<(u64, RecordBatchRow)>> {
+fn load_parquet_data() -> Option<Vec<(u64, TagSet)>> {
     let parquet_dir = std::path::PathBuf::from("benches/data/parquet");
 
     // Check if the parquet data directory exists
@@ -225,14 +225,13 @@ fn bench_build_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
-    // Convert RecordBatchRow to String for ValueAwareLapperCache
-    // ValueAwareLapperCache now works with RecordBatchRow
+    // Using TagSet for direct tag handling
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
         // Build cache once to get statistics
         let cache =
-            ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(sorted_data.clone(), *resolution)
+            ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(sorted_data.clone(), *resolution)
                 .unwrap();
 
         println!("\n=== {} Resolution ===", name);
@@ -247,7 +246,7 @@ fn bench_build_cache(c: &mut Criterion) {
                 || sorted_data.clone(),
                 |data| {
                     let cache =
-                        ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(data, *resolution)
+                        ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(data, *resolution)
                             .unwrap();
                     black_box(cache);
                 },
@@ -293,14 +292,13 @@ fn bench_query_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
-    // Convert RecordBatchRow to String for ValueAwareLapperCache
-    // ValueAwareLapperCache now works with RecordBatchRow
+    // Using TagSet for direct tag handling
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
         // Build cache for this resolution
         let cache =
-            ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(sorted_data.clone(), *resolution)
+            ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(sorted_data.clone(), *resolution)
                 .unwrap();
 
         let n_queries = 100;
@@ -381,7 +379,7 @@ fn bench_append_cache(c: &mut Criterion) {
         let initial_data = parsed_data[..split_point].to_vec();
         let append_data = parsed_data[split_point..].to_vec();
 
-        // ValueAwareLapperCache now works with RecordBatchRow
+        // Using TagSet for direct tag handling
         let sorted_initial = SortedData::from_unsorted(initial_data);
         let sorted_append = SortedData::from_unsorted(append_data.clone());
 
@@ -391,7 +389,7 @@ fn bench_append_cache(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     (
-                        ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(
+                        ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
                             sorted_initial.clone(),
                             *resolution,
                         )

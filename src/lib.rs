@@ -102,6 +102,27 @@ impl<K: HeapSize, V: HeapSize> HeapSize for BTreeMap<K, V> {
     }
 }
 
+impl<T: HeapSize> HeapSize for BTreeSet<T> {
+    fn heap_size(&self) -> usize {
+        // BTreeSet node overhead: approximately 40 bytes per node
+        const NODE_OVERHEAD: usize = 40;
+        let mut size = self.len() * NODE_OVERHEAD;
+
+        // Add the heap size of all values
+        for v in self {
+            size += v.heap_size();
+        }
+
+        size
+    }
+}
+
+impl HeapSize for (String, String) {
+    fn heap_size(&self) -> usize {
+        self.0.heap_size() + self.1.heap_size()
+    }
+}
+
 // Default implementation for types that don't allocate heap memory
 impl HeapSize for u8 {
     fn heap_size(&self) -> usize {

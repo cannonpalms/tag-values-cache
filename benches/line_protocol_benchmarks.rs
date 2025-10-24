@@ -1,19 +1,19 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use chrono::{Utc, TimeZone};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufRead};
 use std::path::Path;
 use std::time::Duration;
 use tag_values_cache::{
-    RecordBatchRow, SortedData, ValueAwareLapperCache, IntervalCache,
+    SortedData, TagSet, ValueAwareLapperCache, IntervalCache,
 };
 
 /// Parse a single line of line protocol format.
 /// Format: measurement,tag1=value1,tag2=value2 field1=value1,field2=value2 timestamp
 ///
 /// For this benchmark, we'll focus on extracting timestamp and tags (not fields).
-fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
+fn parse_line_protocol(line: &str) -> Option<(u64, TagSet)> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 3 {
         return None;
@@ -27,13 +27,13 @@ fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
     let mut tag_parts = measurement_tags.split(',');
     let measurement = tag_parts.next()?;
 
-    let mut values = BTreeMap::new();
+    let mut tag_set = BTreeSet::new();
 
     // Add measurement as a special tag
-    values.insert(
+    tag_set.insert((
         "_measurement".to_string(),
         measurement.to_string(),
-    );
+    ));
 
     // Parse tags - only keep specific tags we're interested in
     let allowed_tags = [
@@ -49,10 +49,10 @@ fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
         if let Some((key, value)) = tag_part.split_once('=') {
             // Only keep allowed tags
             if allowed_tags.contains(&key) {
-                values.insert(
+                tag_set.insert((
                     key.to_string(),
                     value.to_string(),
-                );
+                ));
             }
         }
     }
@@ -73,15 +73,15 @@ fn parse_line_protocol(line: &str) -> Option<(u64, RecordBatchRow)> {
                 value_str.to_string()
             };
 
-            values.insert(format!("_field_{}", key), string_value);
+            tag_set.insert((format!("_field_{}", key), string_value));
         }
     }
 
-    Some((timestamp, RecordBatchRow::new(values)))
+    Some((timestamp, tag_set))
 }
 
 /// Parse line protocol data from a file using buffered reading
-fn parse_line_protocol_file(path: &Path) -> std::io::Result<Vec<(u64, RecordBatchRow)>> {
+fn parse_line_protocol_file(path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut results = Vec::new();
@@ -111,15 +111,17 @@ fn nanos_to_iso(nanos: u64) -> String {
 }
 
 /// Analyze tag statistics from parsed data
-fn analyze_tag_statistics(data: &[(u64, RecordBatchRow)]) -> (usize, usize, BTreeMap<String, usize>) {
+fn analyze_tag_statistics(data: &[(u64, TagSet)]) -> (usize, usize, std::collections::BTreeMap<String, usize>) {
+    use std::collections::BTreeMap;
+
     let mut all_tag_keys = HashSet::new();
     let mut unique_tag_combinations = HashSet::new();
     let mut tag_value_counts: BTreeMap<String, HashSet<String>> = BTreeMap::new();
 
-    for (_, row) in data {
+    for (_, tag_set) in data {
         let mut tag_combination = Vec::new();
 
-        for (key, value) in &row.values {
+        for (key, value) in tag_set {
             // Skip fields (which we prefixed with "_field_") and only count tags
             if !key.starts_with("_field_") {
                 all_tag_keys.insert(key.clone());
@@ -149,7 +151,7 @@ fn analyze_tag_statistics(data: &[(u64, RecordBatchRow)]) -> (usize, usize, BTre
 }
 
 /// Load the real-world data once and return it
-fn load_real_world_data() -> Option<Vec<(u64, RecordBatchRow)>> {
+fn load_real_world_data() -> Option<Vec<(u64, TagSet)>> {
     let att_file = std::path::PathBuf::from("benches/data/att.lp");
 
     // Check if the real-world data file exists
@@ -219,12 +221,12 @@ fn bench_build_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
-    // ValueAwareLapperCache now works with RecordBatchRow
+    // Using TagSet for direct tag handling
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
         // Build cache once to get statistics
-        let cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(
+        let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
             sorted_data.clone(),
             *resolution,
         )
@@ -238,7 +240,7 @@ fn bench_build_cache(c: &mut Criterion) {
             b.iter_batched(
                 || sorted_data.clone(),
                 |data| {
-                    let cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(
+                    let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
                         data,
                         *resolution,
                     )
@@ -287,12 +289,12 @@ fn bench_query_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
-    // ValueAwareLapperCache now works with RecordBatchRow
+    // Using TagSet for direct tag handling
     let sorted_data = SortedData::from_unsorted(parsed_data.clone());
 
     for (name, resolution) in &resolutions {
         // Build cache for this resolution
-        let cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(
+        let cache = ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
             sorted_data.clone(),
             *resolution,
         )
@@ -371,7 +373,7 @@ fn bench_append_cache(c: &mut Criterion) {
         let initial_data = parsed_data[..split_point].to_vec();
         let append_data = parsed_data[split_point..].to_vec();
 
-        // ValueAwareLapperCache now works with RecordBatchRow
+        // Using TagSet for direct tag handling
         let sorted_initial = SortedData::from_unsorted(initial_data);
         let sorted_append = SortedData::from_unsorted(append_data.clone());
 
@@ -381,7 +383,7 @@ fn bench_append_cache(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     (
-                        ValueAwareLapperCache::<RecordBatchRow>::from_sorted_with_resolution(
+                        ValueAwareLapperCache::<TagSet>::from_sorted_with_resolution(
                             sorted_initial.clone(),
                             *resolution,
                         )

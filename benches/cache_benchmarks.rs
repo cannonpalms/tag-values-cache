@@ -1,8 +1,8 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use tag_values_cache::{
     BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache,
-    RecordBatchRow, SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
+    SortedData, TagSet, UnmergedBTreeCache, ValueAwareLapperCache, VecCache,
 };
 
 /// Linear-feedback shift register based PRNG.
@@ -67,7 +67,7 @@ fn generate_data_with_lfsr(
     cardinality: usize,
     value_size: usize,
     mut lfsr: Lfsr,
-) -> (Vec<(u64, RecordBatchRow)>, Lfsr) {
+) -> (Vec<(u64, TagSet)>, Lfsr) {
     let mut data = Vec::with_capacity(num_rows);
 
     // Generate 4 tag columns similar to the real benchmark
@@ -79,42 +79,42 @@ fn generate_data_with_lfsr(
         // Use LFSR to generate deterministic timestamps
         let timestamp = lfsr.next_timestamp();
 
-        let mut values = BTreeMap::new();
+        let mut tag_set = BTreeSet::new();
 
         // Generate tag values cycling through the cardinality space
         let combo_idx = i % cardinality;
 
-        values.insert(
+        tag_set.insert((
             "WithHash".to_string(),
             generate_value(combo_idx % values_per_column, value_size),
-        );
-        values.insert(
+        ));
+        tag_set.insert((
             "CounterID".to_string(),
             generate_value(
                 (combo_idx / values_per_column) % values_per_column,
                 value_size,
             ),
-        );
-        values.insert(
+        ));
+        tag_set.insert((
             "CookieEnable".to_string(),
             generate_value(
                 (combo_idx / (values_per_column * values_per_column)) % values_per_column,
                 value_size,
             ),
-        );
-        values.insert(
+        ));
+        tag_set.insert((
             "URLHash".to_string(),
             generate_value(
                 (combo_idx / (values_per_column * values_per_column * values_per_column))
                     % values_per_column,
                 value_size,
             ),
-        );
+        ));
 
-        data.push((timestamp, RecordBatchRow::new(values)));
+        data.push((timestamp, tag_set));
     }
 
-    // Sort by timestamp only (not by RecordBatchRow which is expensive)
+    // Sort by timestamp only (not by TagSet which is expensive)
     // This is much faster than SortedData::from_unsorted which sorts by both timestamp and value
     data.sort_by_key(|(ts, _)| *ts);
 
@@ -161,16 +161,16 @@ fn bench_build(c: &mut Criterion) {
                 };
             }
 
-            bench_cache_build!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
-            bench_cache_build!(VecCache<RecordBatchRow>, "VecCache");
-            bench_cache_build!(LapperCache<RecordBatchRow>, "LapperCache");
+            bench_cache_build!(IntervalTreeCache<TagSet>, "IntervalTreeCache");
+            bench_cache_build!(VecCache<TagSet>, "VecCache");
+            bench_cache_build!(LapperCache<TagSet>, "LapperCache");
 
-            // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_build!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            // ValueAwareLapperCache now works with TagSet
+            bench_cache_build!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
 
-            bench_cache_build!(BTreeCache<RecordBatchRow>, "BTreeCache");
-            bench_cache_build!(NCListCache<RecordBatchRow>, "NCListCache");
-            bench_cache_build!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
+            bench_cache_build!(BTreeCache<TagSet>, "BTreeCache");
+            bench_cache_build!(NCListCache<TagSet>, "NCListCache");
+            bench_cache_build!(UnmergedBTreeCache<TagSet>, "UnmergedBTreeCache");
         }
     }
 
@@ -226,16 +226,16 @@ fn bench_append(c: &mut Criterion) {
                 };
             }
 
-            bench_cache_append!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
-            bench_cache_append!(VecCache<RecordBatchRow>, "VecCache");
-            bench_cache_append!(LapperCache<RecordBatchRow>, "LapperCache");
+            bench_cache_append!(IntervalTreeCache<TagSet>, "IntervalTreeCache");
+            bench_cache_append!(VecCache<TagSet>, "VecCache");
+            bench_cache_append!(LapperCache<TagSet>, "LapperCache");
 
-            // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_append!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            // ValueAwareLapperCache now works with TagSet
+            bench_cache_append!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
 
-            bench_cache_append!(BTreeCache<RecordBatchRow>, "BTreeCache");
-            bench_cache_append!(NCListCache<RecordBatchRow>, "NCListCache");
-            bench_cache_append!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
+            bench_cache_append!(BTreeCache<TagSet>, "BTreeCache");
+            bench_cache_append!(NCListCache<TagSet>, "NCListCache");
+            bench_cache_append!(UnmergedBTreeCache<TagSet>, "UnmergedBTreeCache");
         }
     }
 
@@ -310,16 +310,16 @@ fn bench_point_queries(c: &mut Criterion) {
                 };
             }
 
-            bench_cache_hits_misses!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
-            bench_cache_hits_misses!(VecCache<RecordBatchRow>, "VecCache");
-            bench_cache_hits_misses!(LapperCache<RecordBatchRow>, "LapperCache");
+            bench_cache_hits_misses!(IntervalTreeCache<TagSet>, "IntervalTreeCache");
+            bench_cache_hits_misses!(VecCache<TagSet>, "VecCache");
+            bench_cache_hits_misses!(LapperCache<TagSet>, "LapperCache");
 
-            // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_hits_misses!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            // ValueAwareLapperCache now works with TagSet
+            bench_cache_hits_misses!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
 
-            bench_cache_hits_misses!(BTreeCache<RecordBatchRow>, "BTreeCache");
-            bench_cache_hits_misses!(NCListCache<RecordBatchRow>, "NCListCache");
-            bench_cache_hits_misses!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
+            bench_cache_hits_misses!(BTreeCache<TagSet>, "BTreeCache");
+            bench_cache_hits_misses!(NCListCache<TagSet>, "NCListCache");
+            bench_cache_hits_misses!(UnmergedBTreeCache<TagSet>, "UnmergedBTreeCache");
         }
     }
 
@@ -386,16 +386,16 @@ fn bench_range_queries(c: &mut Criterion) {
                 };
             }
 
-            bench_cache_range!(IntervalTreeCache<RecordBatchRow>, "IntervalTreeCache");
-            bench_cache_range!(VecCache<RecordBatchRow>, "VecCache");
-            bench_cache_range!(LapperCache<RecordBatchRow>, "LapperCache");
+            bench_cache_range!(IntervalTreeCache<TagSet>, "IntervalTreeCache");
+            bench_cache_range!(VecCache<TagSet>, "VecCache");
+            bench_cache_range!(LapperCache<TagSet>, "LapperCache");
 
-            // ValueAwareLapperCache now works with RecordBatchRow
-            bench_cache_range!(ValueAwareLapperCache<RecordBatchRow>, "ValueAwareLapperCache");
+            // ValueAwareLapperCache now works with TagSet
+            bench_cache_range!(ValueAwareLapperCache<TagSet>, "ValueAwareLapperCache");
 
-            bench_cache_range!(BTreeCache<RecordBatchRow>, "BTreeCache");
-            bench_cache_range!(NCListCache<RecordBatchRow>, "NCListCache");
-            bench_cache_range!(UnmergedBTreeCache<RecordBatchRow>, "UnmergedBTreeCache");
+            bench_cache_range!(BTreeCache<TagSet>, "BTreeCache");
+            bench_cache_range!(NCListCache<TagSet>, "NCListCache");
+            bench_cache_range!(UnmergedBTreeCache<TagSet>, "UnmergedBTreeCache");
         }
     }
 

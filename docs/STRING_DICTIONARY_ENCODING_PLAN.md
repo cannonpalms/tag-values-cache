@@ -2,10 +2,11 @@
 
 ## Overview
 
-This document outlines the plan to refactor the ValueAwareLapperCache to remove `RecordBatchRow` and handle strings directly. The refactoring is divided into two phases:
+This document outlines the plan to refactor the ValueAwareLapperCache to remove `RecordBatchRow` and handle strings directly. The refactoring is divided into three phases:
 
-1. **Phase 1**: Remove dictionary encoding - simplify the current implementation
-2. **Phase 2**: Replace RecordBatchRow with sets of `(String, String)` tuples for direct string handling
+1. **Phase 1**: Remove dictionary encoding - simplify the current implementation ✅ COMPLETED
+2. **Phase 2**: Add TagSet type and helper functions ✅ COMPLETED
+3. **Phase 3**: Convert benchmarks to use TagSet instead of RecordBatchRow
 
 ## Current State Analysis
 
@@ -32,7 +33,7 @@ pub struct ValueAwareLapperCache {
 2. **Dictionary encoding complexity**: The current Arc-based interning is complex for marginal gains
 3. **Rigid structure**: BTreeMap wrapper makes direct string manipulation cumbersome
 
-## Proposed Solution: Two-Phase Refactoring
+## Proposed Solution: Three-Phase Refactoring
 
 ### Phase 1: Remove Dictionary Encoding and Make Cache Generic
 
@@ -94,9 +95,17 @@ pub type TagSet = BTreeSet<(String, String)>;
 
 ## Implementation Plan
 
-### Phase 1: Remove Dictionary Encoding and Make Cache Generic
+### Implementation Status
 
-**Files to modify:**
+| Phase | Status | Description |
+|-------|--------|-------------|
+| Phase 1 | ✅ COMPLETED | Made ValueAwareLapperCache generic, removed Arc-based interning |
+| Phase 2 | ✅ COMPLETED | Added TagSet type and helper functions |
+| Phase 3 | 📋 PLANNED | Convert benchmarks to use TagSet |
+
+### Phase 1: Remove Dictionary Encoding and Make Cache Generic ✅
+
+**Files modified:**
 - `src/value_aware_lapper_cache.rs`
 
 **Changes:**
@@ -158,7 +167,9 @@ where
 
 6. **Update all tests** to specify concrete type (e.g., `ValueAwareLapperCache<RecordBatchRow>`)
 
-### Phase 2: Add TagSet Type and Use in Benchmarks
+**Status**: ✅ Successfully completed. All tests passing.
+
+### Phase 2: Add TagSet Type and Helper Functions ✅
 
 **Files to modify:**
 - `src/lib.rs` (add TagSet type alias)
@@ -203,6 +214,65 @@ let cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted(
     Duration::from_nanos(1),
 )?;
 ```
+
+### Phase 3: Convert Benchmarks to Use TagSet
+
+**Goal**: Update benchmarks to use `TagSet` (BTreeSet of (String, String) tuples) directly instead of `RecordBatchRow` for better performance and memory efficiency.
+
+**Rationale**:
+- TagSet is a more natural representation for tag data (column_name, column_value) pairs
+- BTreeSet provides deterministic ordering and efficient lookups
+- Eliminates the overhead of the RecordBatchRow wrapper
+- Direct representation reduces memory usage and improves cache locality
+
+**Implementation Plan**:
+
+1. **Update data extraction in benchmarks**:
+   ```rust
+   // Before (using RecordBatchRow):
+   let data = extract_rows_from_batch(&batch);
+   let cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted(data);
+
+   // After (using TagSet):
+   let data = extract_tags_from_batch(&batch);
+   let cache = ValueAwareLapperCache::<TagSet>::from_sorted(data);
+   ```
+
+2. **Files to modify**:
+   - `benches/cache_benchmarks.rs` - Update all cache benchmarks to use TagSet
+   - `benches/parquet_benchmarks.rs` - Convert parquet data extraction to TagSet
+   - `benches/line_protocol_benchmarks.rs` - Convert line protocol parsing to TagSet
+
+3. **Update cache instantiation**:
+   - Change all `ValueAwareLapperCache<RecordBatchRow>` to `ValueAwareLapperCache<TagSet>`
+   - Update other generic caches (IntervalTreeCache, LapperCache, etc.) to use TagSet
+   - Ensure SortedData is created with TagSet values
+
+4. **Expected memory savings**:
+   ```rust
+   // RecordBatchRow memory layout:
+   // - BTreeMap overhead: ~40 bytes per node
+   // - String keys and values with heap allocations
+   // - Wrapper struct overhead
+
+   // TagSet memory layout:
+   // - BTreeSet overhead: ~40 bytes per node (but only one tree)
+   // - Direct tuple storage (String, String)
+   // - No wrapper overhead
+   // Expected: 20-30% memory reduction
+   ```
+
+5. **Performance improvements**:
+   - Faster equality comparisons (BTreeSet vs BTreeMap)
+   - Better cache locality (smaller structs)
+   - Reduced allocation overhead
+   - Expected: 10-20% query performance improvement
+
+**Validation**:
+- Run benchmarks before and after conversion
+- Compare memory usage using `size_bytes()` measurements
+- Verify correctness with existing test data
+- Profile with `perf` or `valgrind` to confirm improvements
 
 ### Testing and Validation
 
@@ -416,13 +486,51 @@ impl ValueAwareLapperCache {
 
 **Total**: ~13 days of development
 
+## Phase 3 Implementation Guide
+
+### Benchmark Conversion Checklist
+
+- [ ] Update `benches/cache_benchmarks.rs`
+  - [ ] Replace `extract_rows_from_batch` with `extract_tags_from_batch`
+  - [ ] Change all cache types to use `TagSet`
+  - [ ] Update benchmark data generation if needed
+
+- [ ] Update `benches/parquet_benchmarks.rs`
+  - [ ] Replace `extract_rows_from_batch` with `extract_tags_from_batch`
+  - [ ] Convert `ValueAwareLapperCache<RecordBatchRow>` to `ValueAwareLapperCache<TagSet>`
+  - [ ] Update data processing pipeline
+
+- [ ] Update `benches/line_protocol_benchmarks.rs`
+  - [ ] Replace `extract_rows_from_batch` with `extract_tags_from_batch`
+  - [ ] Update cache instantiation
+  - [ ] Verify line protocol parsing works with TagSet
+
+- [ ] Performance validation
+  - [ ] Run benchmarks before conversion (baseline)
+  - [ ] Run benchmarks after conversion
+  - [ ] Compare memory usage metrics
+  - [ ] Document performance improvements
+
+### Example Conversion
+
+```rust
+// Before - Using RecordBatchRow
+let parsed_data = extract_rows_from_batch(&batch);
+let sorted_data = SortedData::<RecordBatchRow>::from_unsorted(parsed_data);
+let cache = ValueAwareLapperCache::<RecordBatchRow>::from_sorted(sorted_data)?;
+
+// After - Using TagSet
+let parsed_data = extract_tags_from_batch(&batch);
+let sorted_data = SortedData::<TagSet>::from_unsorted(parsed_data);
+let cache = ValueAwareLapperCache::<TagSet>::from_sorted(sorted_data)?;
+```
+
 ## Conclusion
 
-This refactoring will significantly improve the memory efficiency and performance of the ValueAwareLapperCache by:
+This three-phase refactoring improves the ValueAwareLapperCache by:
 
-1. Eliminating string duplication through dictionary encoding
-2. Reducing comparison overhead with numeric IDs
-3. Improving cache locality with smaller data structures
-4. Enabling future optimizations like dictionary compression
+1. **Phase 1 (✅ COMPLETED)**: Simplified the implementation by making it generic and removing unnecessary Arc-based interning
+2. **Phase 2 (✅ COMPLETED)**: Added TagSet type for direct string handling without wrapper overhead
+3. **Phase 3 (📋 PLANNED)**: Will convert benchmarks to use TagSet for better performance metrics
 
-The phased approach ensures we can validate improvements incrementally while maintaining a working system throughout the migration.
+The phased approach has allowed us to validate improvements incrementally while maintaining a working system. The generic implementation provides flexibility for users to choose the data representation that best fits their needs.
