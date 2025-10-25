@@ -4,6 +4,7 @@
 //! this wrapper only merges intervals when both the boundaries AND values match.
 
 use num_traits::{PrimInt, Unsigned};
+use rayon::prelude::*;
 use rust_lapper::{Interval, Lapper};
 use std::fmt;
 use std::ops::Range;
@@ -91,44 +92,71 @@ where
 
         // Sort by value first, then by start, then by stop
         // This groups intervals with the same value together
-        intervals.sort_by(|a, b| {
+        intervals.par_sort_by(|a, b| {
             a.val
                 .cmp(&b.val)
                 .then(a.start.cmp(&b.start))
                 .then(a.stop.cmp(&b.stop))
         });
 
-        // Use stack-based merging (like Lapper's merge_overlaps)
-        // but only merge intervals with the same value
-        let mut stack: VecDeque<Interval<T, V>> = VecDeque::new();
-        let mut ivs = intervals.into_iter();
+        // Group intervals by value for parallel processing
+        let mut groups: Vec<Vec<Interval<T, V>>> = Vec::new();
+        let mut current_group = Vec::new();
+        let mut current_val: Option<V> = None;
 
-        if let Some(first) = ivs.next() {
-            stack.push_back(first);
-
-            for interval in ivs {
-                let mut top = stack.pop_back().unwrap();
-
-                // Check if we can merge: same value AND overlapping/adjacent
-                if top.val == interval.val && top.stop >= interval.start {
-                    // Merge by extending the top interval
-                    if top.stop < interval.stop {
-                        top.stop = interval.stop;
+        for interval in intervals {
+            match &current_val {
+                Some(val) if *val == interval.val => {
+                    current_group.push(interval);
+                }
+                _ => {
+                    if !current_group.is_empty() {
+                        groups.push(std::mem::take(&mut current_group));
                     }
-                    stack.push_back(top);
-                } else {
-                    // Different value or gap - cannot merge
-                    stack.push_back(top);
-                    stack.push_back(interval);
+                    current_val = Some(interval.val.clone());
+                    current_group.push(interval);
                 }
             }
-
-            // Collect all merged intervals
-            let merged: Vec<_> = stack.into_iter().collect();
-
-            // Rebuild the lapper (Lapper::new will sort internally)
-            self.lapper = Lapper::new(merged);
         }
+        if !current_group.is_empty() {
+            groups.push(current_group);
+        }
+
+        // Merge each group in parallel
+        let merged: Vec<Interval<T, V>> = groups
+            .into_par_iter()
+            .flat_map(|group| {
+                // Use stack-based merging for each group
+                let mut stack: VecDeque<Interval<T, V>> = VecDeque::new();
+                let mut ivs = group.into_iter();
+
+                if let Some(first) = ivs.next() {
+                    stack.push_back(first);
+
+                    for interval in ivs {
+                        let mut top = stack.pop_back().unwrap();
+
+                        // Check if we can merge: overlapping/adjacent (value already matches)
+                        if top.stop >= interval.start {
+                            // Merge by extending the top interval
+                            if top.stop < interval.stop {
+                                top.stop = interval.stop;
+                            }
+                            stack.push_back(top);
+                        } else {
+                            // Gap - cannot merge
+                            stack.push_back(top);
+                            stack.push_back(interval);
+                        }
+                    }
+                }
+
+                stack.into_iter().collect::<Vec<_>>()
+            })
+            .collect();
+
+        // Rebuild the lapper (Lapper::new will sort internally)
+        self.lapper = Lapper::new(merged);
     }
 
     /// Find all intervals that overlap with the given range.

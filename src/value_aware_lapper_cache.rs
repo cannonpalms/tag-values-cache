@@ -9,6 +9,7 @@ use std::ops::Range;
 use std::time::Duration;
 
 use arrow_util::dictionary::StringDictionary;
+use rayon::prelude::*;
 use rust_lapper::Interval;
 
 use crate::{
@@ -268,6 +269,103 @@ impl ValueAwareLapperCache {
         })
     }
 
+    /// Helper to encode a chunk of data with a local dictionary.
+    /// Returns (encoded_points, local_string_dict, local_tagsets, local_tagset_map)
+    fn encode_chunk(
+        chunk: Vec<(Timestamp, TagSet)>,
+    ) -> (
+        Vec<(Timestamp, usize)>,
+        StringDictionary<usize>,
+        Vec<EncodedTagSet>,
+        std::collections::HashMap<EncodedTagSet, usize>,
+    ) {
+        let mut string_dict = StringDictionary::new();
+        let mut tagsets = Vec::new();
+        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
+            std::collections::HashMap::new();
+
+        let encoded_points: Vec<(Timestamp, usize)> = chunk
+            .into_iter()
+            .map(|(ts, tagset)| {
+                // Encode the TagSet
+                let encoded: EncodedTagSet = tagset
+                    .iter()
+                    .map(|(k, val)| {
+                        let key_id = string_dict.lookup_value_or_insert(k);
+                        let value_id = string_dict.lookup_value_or_insert(val);
+                        (key_id, value_id)
+                    })
+                    .collect();
+
+                // Find or create tagset ID using HashMap for O(1) lookup
+                let encoded_id = *tagset_map.entry(encoded.clone()).or_insert_with(|| {
+                    let id = tagsets.len();
+                    tagsets.push(encoded);
+                    id
+                });
+
+                (ts, encoded_id)
+            })
+            .collect();
+
+        (encoded_points, string_dict, tagsets, tagset_map)
+    }
+
+    /// Merge multiple local dictionaries into a global dictionary.
+    /// Returns (global_dict, global_tagsets, id_remapping_per_chunk)
+    fn merge_dictionaries(
+        local_dicts: Vec<(
+            StringDictionary<usize>,
+            Vec<EncodedTagSet>,
+            std::collections::HashMap<EncodedTagSet, usize>,
+        )>,
+    ) -> (
+        StringDictionary<usize>,
+        Vec<EncodedTagSet>,
+        Vec<Vec<usize>>, // Remapping table: chunk_idx -> [local_id -> global_id]
+    ) {
+        let mut global_dict = StringDictionary::new();
+        let mut global_tagsets = Vec::new();
+        let mut global_tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
+            std::collections::HashMap::new();
+        let mut id_remappings = Vec::new();
+
+        for (local_dict, local_tagsets, _local_tagset_map) in local_dicts {
+            // Build string ID remapping for this chunk
+            let string_id_remap: Vec<usize> = (0..local_dict.values().len())
+                .map(|local_id| {
+                    let string = local_dict.lookup_id(local_id).unwrap();
+                    global_dict.lookup_value_or_insert(string)
+                })
+                .collect();
+
+            // Build tagset ID remapping for this chunk
+            let mut tagset_id_remap = Vec::new();
+            for local_tagset in local_tagsets {
+                // Remap the encoded tagset using the string ID remapping
+                let remapped_tagset: EncodedTagSet = local_tagset
+                    .iter()
+                    .map(|(key_id, val_id)| {
+                        (string_id_remap[*key_id], string_id_remap[*val_id])
+                    })
+                    .collect();
+
+                // Find or create global tagset ID
+                let global_id = *global_tagset_map.entry(remapped_tagset.clone()).or_insert_with(|| {
+                    let id = global_tagsets.len();
+                    global_tagsets.push(remapped_tagset);
+                    id
+                });
+
+                tagset_id_remap.push(global_id);
+            }
+
+            id_remappings.push(tagset_id_remap);
+        }
+
+        (global_dict, global_tagsets, id_remappings)
+    }
+
     /// Create a cache from unsorted data with a specific time resolution.
     ///
     /// This method is optimized for performance: it dictionary-encodes TagSets BEFORE sorting,
@@ -294,39 +392,50 @@ impl ValueAwareLapperCache {
             });
         }
 
-        // 1. Dictionary-encode all TagSets FIRST
-        let mut string_dict = StringDictionary::new();
-        let mut tagsets = Vec::new();
-        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
-            std::collections::HashMap::new();
+        // 1. Dictionary-encode all TagSets FIRST using parallel chunks
+        // Determine chunk size based on data size and available parallelism
+        let num_threads = rayon::current_num_threads();
+        let chunk_size = (points.len() / num_threads).max(1000); // At least 1000 items per chunk
 
-        // Encode all TagSets and get their IDs
-        let mut encoded_points: Vec<(Timestamp, usize)> = points
+        // Process chunks in parallel, each building local dictionaries
+        let local_results: Vec<_> = points
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let chunk_vec = chunk.to_vec();
+                Self::encode_chunk(chunk_vec)
+            })
+            .collect();
+
+        // Separate the results
+        let local_dicts: Vec<_> = local_results
             .into_iter()
-            .map(|(ts, tagset)| {
-                // Encode the TagSet
-                let encoded: EncodedTagSet = tagset
+            .map(|(encoded, dict, tagsets, map)| (dict, tagsets, map, encoded))
+            .collect();
+
+        let encoded_chunks: Vec<_> = local_dicts.iter().map(|(_, _, _, enc)| enc.clone()).collect();
+        let dict_data: Vec<_> = local_dicts
+            .into_iter()
+            .map(|(dict, tagsets, map, _)| (dict, tagsets, map))
+            .collect();
+
+        // Merge dictionaries into global dictionary
+        let (string_dict, tagsets, id_remappings) = Self::merge_dictionaries(dict_data);
+
+        // Remap local IDs to global IDs in parallel
+        let mut encoded_points: Vec<(Timestamp, usize)> = encoded_chunks
+            .par_iter()
+            .zip(id_remappings.par_iter())
+            .flat_map(|(chunk_encoded, id_remap)| {
+                chunk_encoded
                     .iter()
-                    .map(|(k, val)| {
-                        let key_id = string_dict.lookup_value_or_insert(k);
-                        let value_id = string_dict.lookup_value_or_insert(val);
-                        (key_id, value_id)
-                    })
-                    .collect();
-
-                // Find or create tagset ID using HashMap for O(1) lookup
-                let encoded_id = *tagset_map.entry(encoded.clone()).or_insert_with(|| {
-                    let id = tagsets.len();
-                    tagsets.push(encoded);
-                    id
-                });
-
-                (ts, encoded_id)
+                    .map(|(ts, local_id)| (*ts, id_remap[*local_id]))
+                    .collect::<Vec<_>>()
             })
             .collect();
 
         // 2. Sort by (timestamp, tagset_id) - FAST integer comparisons!
-        encoded_points.sort_by_key(|(time, id)| (*time, *id));
+        // Use parallel sort for better performance on large datasets
+        encoded_points.par_sort_unstable_by_key(|(time, id)| (*time, *id));
 
         // 3. Build intervals from pre-sorted encoded data
         let intervals = Self::build_intervals_from_encoded(encoded_points, resolution)?;
@@ -420,7 +529,44 @@ impl ValueAwareLapperCache {
             return Ok(());
         }
 
-        // Pre-populate tagset map with existing tagsets to avoid duplicates
+        // Determine chunk size based on data size and available parallelism
+        let num_threads = rayon::current_num_threads();
+        let chunk_size = (points.len() / num_threads).max(1000); // At least 1000 items per chunk
+
+        // Process chunks in parallel, each building local dictionaries
+        let local_results: Vec<_> = points
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let chunk_vec = chunk.to_vec();
+                Self::encode_chunk(chunk_vec)
+            })
+            .collect();
+
+        // Separate the results
+        let local_dicts: Vec<_> = local_results
+            .into_iter()
+            .map(|(encoded, dict, tagsets, map)| (dict, tagsets, map, encoded))
+            .collect();
+
+        let encoded_chunks: Vec<_> = local_dicts.iter().map(|(_, _, _, enc)| enc.clone()).collect();
+        let dict_data: Vec<_> = local_dicts
+            .into_iter()
+            .map(|(dict, tagsets, map, _)| (dict, tagsets, map))
+            .collect();
+
+        // Merge new dictionaries with existing dictionary
+        // First merge the local dictionaries
+        let (new_string_dict, new_tagsets, id_remappings) = Self::merge_dictionaries(dict_data);
+
+        // Now merge with existing global dictionary
+        let string_id_remap: Vec<usize> = (0..new_string_dict.values().len())
+            .map(|local_id| {
+                let string = new_string_dict.lookup_id(local_id).unwrap();
+                self.string_dict.lookup_value_or_insert(string)
+            })
+            .collect();
+
+        // Build final tagset ID remapping
         let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
             self.tagsets
                 .iter()
@@ -428,33 +574,45 @@ impl ValueAwareLapperCache {
                 .map(|(id, tagset)| (tagset.clone(), id))
                 .collect();
 
-        // Encode all TagSets and get their IDs
-        let mut encoded_points: Vec<(Timestamp, usize)> = points
+        let final_id_remappings: Vec<Vec<usize>> = id_remappings
             .into_iter()
-            .map(|(ts, tagset)| {
-                // Encode the TagSet
-                let encoded: EncodedTagSet = tagset
-                    .iter()
-                    .map(|(k, val)| {
-                        let key_id = self.string_dict.lookup_value_or_insert(k);
-                        let value_id = self.string_dict.lookup_value_or_insert(val);
-                        (key_id, value_id)
+            .map(|chunk_remap| {
+                chunk_remap
+                    .into_iter()
+                    .map(|new_tagset_id| {
+                        let new_tagset = &new_tagsets[new_tagset_id];
+                        let remapped_tagset: EncodedTagSet = new_tagset
+                            .iter()
+                            .map(|(key_id, val_id)| {
+                                (string_id_remap[*key_id], string_id_remap[*val_id])
+                            })
+                            .collect();
+
+                        *tagset_map.entry(remapped_tagset.clone()).or_insert_with(|| {
+                            let id = self.tagsets.len();
+                            self.tagsets.push(remapped_tagset);
+                            id
+                        })
                     })
-                    .collect();
+                    .collect()
+            })
+            .collect();
 
-                // Find or create tagset ID using HashMap for O(1) lookup
-                let encoded_id = *tagset_map.entry(encoded.clone()).or_insert_with(|| {
-                    let id = self.tagsets.len();
-                    self.tagsets.push(encoded);
-                    id
-                });
-
-                (ts, encoded_id)
+        // Remap local IDs to global IDs in parallel
+        let mut encoded_points: Vec<(Timestamp, usize)> = encoded_chunks
+            .par_iter()
+            .zip(final_id_remappings.par_iter())
+            .flat_map(|(chunk_encoded, id_remap)| {
+                chunk_encoded
+                    .iter()
+                    .map(|(ts, local_id)| (*ts, id_remap[*local_id]))
+                    .collect::<Vec<_>>()
             })
             .collect();
 
         // Sort by (timestamp, tagset_id) - FAST integer comparisons!
-        encoded_points.sort_by_key(|(time, id)| (*time, *id));
+        // Use parallel sort for better performance on large datasets
+        encoded_points.par_sort_unstable_by_key(|(time, id)| (*time, *id));
 
         // Build intervals from pre-sorted encoded data
         let new_intervals = Self::build_intervals_from_encoded(encoded_points, self.resolution)?;
