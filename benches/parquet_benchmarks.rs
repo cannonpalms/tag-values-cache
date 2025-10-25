@@ -294,13 +294,11 @@ fn bench_build_cache(c: &mut Criterion) {
     ];
 
     // Using TagSet for direct tag handling
-    let sorted_data = SortedData::from_unsorted(parsed_data.clone());
-
     for (name, resolution) in &resolutions {
         group.bench_function(format!("{}_resolution", name), |b| {
             // Build cache once to get statistics on first iteration
-            let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-                sorted_data.clone(),
+            let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
+                parsed_data.clone(),
                 *resolution,
             )
             .unwrap();
@@ -314,9 +312,9 @@ fn bench_build_cache(c: &mut Criterion) {
             drop(cache);
 
             b.iter_batched(
-                || sorted_data.clone(),
+                || parsed_data.clone(),
                 |data| {
-                    let cache = ValueAwareLapperCache::from_sorted_with_resolution(
+                    let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
                         data,
                         *resolution,
                     )
@@ -327,8 +325,6 @@ fn bench_build_cache(c: &mut Criterion) {
             );
         });
     }
-
-    drop(sorted_data);
 
     group.finish();
 }
@@ -362,9 +358,6 @@ fn bench_query_cache(c: &mut Criterion) {
         ("5minute", Duration::from_secs(300)),
     ];
 
-    // Using TagSet for direct tag handling
-    let sorted_data = SortedData::from_unsorted(parsed_data.clone());
-
     let n_queries = 100;
 
     // Create test ranges distributed across the time span (in nanoseconds)
@@ -383,8 +376,8 @@ fn bench_query_cache(c: &mut Criterion) {
     for (name, resolution) in &resolutions {
         group.bench_function(BenchmarkId::new("range_10pct", name), |b| {
             // Build cache for this resolution
-            let cache = ValueAwareLapperCache::from_sorted_with_resolution(
-                sorted_data.clone(),
+            let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
+                parsed_data.clone(),
                 *resolution,
             )
             .unwrap();
@@ -396,8 +389,6 @@ fn bench_query_cache(c: &mut Criterion) {
             });
         });
     }
-
-    drop(sorted_data);
     group.finish();
 }
 
@@ -430,7 +421,6 @@ fn bench_append_cache(c: &mut Criterion) {
         let append_data = parsed_data[split_point..].to_vec();
 
         // Using TagSet for direct tag handling
-        let sorted_initial = SortedData::from_unsorted(initial_data);
         let sorted_append = SortedData::from_unsorted(append_data.clone());
 
         group.throughput(Throughput::Elements(append_data.len() as u64));
@@ -439,8 +429,8 @@ fn bench_append_cache(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     (
-                        ValueAwareLapperCache::from_sorted_with_resolution(
-                            sorted_initial.clone(),
+                        ValueAwareLapperCache::from_unsorted_with_resolution(
+                            initial_data.clone(),
                             *resolution,
                         )
                         .unwrap(),
@@ -455,7 +445,6 @@ fn bench_append_cache(c: &mut Criterion) {
             );
         });
 
-        drop(sorted_initial);
         drop(sorted_append);
     }
 
