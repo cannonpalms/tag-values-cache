@@ -4546,6 +4546,7 @@ dependencies = [
  "intervaltree",
  "num-traits",
  "parquet",
+ "rayon",
  "rust-lapper",
  "thiserror",
 ]

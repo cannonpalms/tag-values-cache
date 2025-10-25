@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rayon::prelude::*;
 use tag_values_cache::{
     BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, TagSet,
     SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_tags_from_batch,
@@ -134,65 +135,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Found {} parquet file(s) to process", parquet_files.len());
 
-    // Load data from parquet files
-    let mut all_data = Vec::new();
+    // Load data from parquet files in parallel
     let start_load = Instant::now();
-    let mut total_batch_count = 0;
 
-    for file_path in &parquet_files {
-        // Check if we've reached our limit (if one was specified)
-        if let Some(limit) = total_rows
-            && all_data.len() >= limit
-        {
-            break;
-        }
+    // Process files in parallel
+    let all_data: Vec<(u64, TagSet)> = parquet_files
+        .par_iter()
+        .flat_map(|file_path| {
+            println!("\nLoading parquet file: {file_path}");
 
-        println!("\nLoading parquet file: {file_path}");
+            // Open the parquet file
+            let file = File::open(file_path).ok()?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
 
-        // Open the parquet file
-        let file = File::open(file_path)?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+            // Get metadata about the file
+            let metadata = builder.metadata();
+            let file_rows = metadata.file_metadata().num_rows();
+            println!("  Rows in file: {file_rows}");
 
-        // Get metadata about the file
-        let metadata = builder.metadata();
-        let file_rows = metadata.file_metadata().num_rows();
-        println!("  Rows in file: {file_rows}");
+            // Build the reader
+            let reader = builder.build().ok()?;
 
-        // Build the reader
-        let reader = builder.build()?;
+            // Collect all batches from this file first
+            let batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>().ok()?;
 
-        // Process batches until we have enough rows
-        for batch_result in reader {
-            // Check if we've reached our limit (if one was specified)
-            if let Some(limit) = total_rows
-                && all_data.len() >= limit
-            {
-                break;
-            }
+            // Process batches in parallel using rayon
+            let file_data: Vec<(u64, TagSet)> = batches
+                .par_iter()
+                .flat_map(|batch| extract_tags_from_batch(batch))
+                .collect();
 
-            let batch = batch_result?;
-            total_batch_count += 1;
+            println!("  Extracted {} rows from {}", file_data.len(), file_path);
 
-            if total_batch_count % 50 == 0 {
-                println!(
-                    "    Processed {} batches ({} rows)...",
-                    total_batch_count,
-                    all_data.len()
-                );
-            }
+            Some(file_data)
+        })
+        .flatten()
+        .collect();
 
-            let tags = extract_tags_from_batch(&batch);
-            all_data.extend(tags);
-
-            // Trim to exactly total_rows if we went over
-            if let Some(limit) = total_rows
-                && all_data.len() > limit
-            {
-                all_data.truncate(limit);
-                break;
-            }
-        }
-    }
+    // Apply row limit if specified
+    let all_data = if let Some(limit) = total_rows {
+        let mut limited_data = all_data;
+        limited_data.truncate(limit);
+        limited_data
+    } else {
+        all_data
+    };
 
     println!(
         "\nLoaded {} rows in {:?}",

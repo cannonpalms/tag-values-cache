@@ -14,6 +14,7 @@ interavl = { path = "./interavl" }
 intervaltree = "0.2.7"
 num-traits = "0.2"
 parquet = { version = "55.2", features = ["arrow"] }
+rayon = "1.10"
 rust-lapper = "1.2.0"
 thiserror = "2.0.17"
 arrow_util = { path = "../influxdb_iox/arrow_util" }

@@ -1,5 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rayon::prelude::*;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
@@ -30,19 +31,52 @@ fn calculate_cardinality(data: &[(u64, TagSet)]) -> usize {
     unique_combinations.len()
 }
 
-/// Load data from all parquet files in a directory
-/// Stops when total cardinality reaches 1M or 7 days of data, whichever comes first
-fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
-    let mut all_data = Vec::new();
-    let max_cardinality = 1_000_000;
-    let max_duration_ns = 7 * 24 * 60 * 60 * 1_000_000_000u64; // 7 days in nanoseconds
+/// File metadata extracted from parquet without loading full data
+#[derive(Debug, Clone)]
+struct FileMetadata {
+    path: std::path::PathBuf,
+    num_rows: usize,
+    min_timestamp: Option<i64>,
+    max_timestamp: Option<i64>,
+}
 
-    let mut total_rows = 0usize;
-    let mut total_duration_ns = 0u64;
-    let mut total_cardinality = 0usize;
+/// Extract min/max timestamps from parquet file metadata statistics
+fn get_timestamp_range(metadata: &parquet::file::metadata::ParquetMetaData) -> (Option<i64>, Option<i64>) {
+    use parquet::file::statistics::Statistics;
+
+    let mut overall_min: Option<i64> = None;
+    let mut overall_max: Option<i64> = None;
+
+    // Iterate through row groups to find timestamp column statistics
+    for row_group in metadata.row_groups() {
+        for column in row_group.columns() {
+            // Look for time/timestamp column
+            let col_name = column.column_descr().name().to_lowercase();
+            if col_name == "time" || col_name == "timestamp" || col_name == "_time" || col_name == "eventtime" {
+                if let Some(stats) = column.statistics() {
+                    // Try to extract as Int64 (most common for timestamps)
+                    if let Statistics::Int64(int_stats) = stats {
+                        if let (Some(min), Some(max)) = (int_stats.min_opt(), int_stats.max_opt()) {
+                            overall_min = Some(overall_min.map_or(*min, |m| m.min(*min)));
+                            overall_max = Some(overall_max.map_or(*max, |m| m.max(*max)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (overall_min, overall_max)
+}
+
+/// Load data from all parquet files in a directory
+/// Stops when row count reaches 10M OR duration reaches 1 week
+fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
+    let max_rows = 10_000_000;
+    let max_duration_ns = 7 * 24 * 60 * 60 * 1_000_000_000u64; // 1 week in nanoseconds
 
     // Collect all parquet files first
-    let mut parquet_files: Vec<_> = fs::read_dir(dir_path)?
+    let parquet_files: Vec<_> = fs::read_dir(dir_path)?
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
@@ -54,108 +88,132 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
         })
         .collect();
 
-    parquet_files.sort();
+    // Phase 1: Scan metadata from all files in parallel
+    let mut file_metadata: Vec<FileMetadata> = parquet_files
+        .par_iter()
+        .filter_map(|path| {
+            let file = File::open(path).ok()?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
+            let metadata = builder.metadata();
+            let num_rows = metadata.file_metadata().num_rows() as usize;
+            let (min_ts, max_ts) = get_timestamp_range(metadata);
 
-    println!(
-        "\nLoading parquet files (stopping at {}M cardinality or 7 days of data)...\n",
-        max_cardinality / 1_000_000
-    );
+            Some(FileMetadata {
+                path: path.clone(),
+                num_rows,
+                min_timestamp: min_ts,
+                max_timestamp: max_ts,
+            })
+        })
+        .collect();
 
-    // Read all parquet files in the directory
-    for (file_index, path) in parquet_files.iter().enumerate() {
-        println!("Loading: {:?}", path.file_name().unwrap_or_default());
+    // Sort by min timestamp (oldest first)
+    file_metadata.sort_by_key(|metadata| metadata.min_timestamp.unwrap_or(i64::MAX));
 
-        let file = File::open(path)?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    // Phase 2: Select consecutive files based on metadata timestamps, then load in chunks
+    // First, filter to only consecutive files
+    let mut consecutive_files = Vec::new();
+    let mut prev_max_ts: Option<i64> = None;
+    const MAX_GAP_NS: i64 = 25 * 60 * 60 * 1_000_000_000; // 25 hours gap tolerance
 
-        let reader = builder
-            .build()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    for metadata in file_metadata {
+        if let (Some(file_min), Some(file_max)) = (metadata.min_timestamp, metadata.max_timestamp) {
+            // Check if this file is consecutive with the previous one
+            let is_consecutive = if let Some(prev_max) = prev_max_ts {
+                let gap = file_min.saturating_sub(prev_max);
+                gap <= MAX_GAP_NS
+            } else {
+                true // First file is always accepted
+            };
 
-        let mut file_data = Vec::new();
-        for batch_result in reader {
-            match batch_result {
-                Ok(batch) => {
-                    let tags = extract_tags_from_batch(&batch);
-                    file_data.extend(tags);
-                }
-                Err(e) => {
-                    eprintln!("  Warning: Failed to read batch: {}", e);
-                    continue;
+            if is_consecutive {
+                consecutive_files.push(metadata.clone());
+                prev_max_ts = Some(file_max);
+            } else {
+                // Gap detected - stop looking for more files
+                break;
+            }
+        } else {
+            // No timestamp metadata - skip this file
+            continue;
+        }
+    }
+
+    // Phase 3: Load consecutive files in chunks of 4
+    const CHUNK_SIZE: usize = 4;
+    let mut all_data = Vec::new();
+    let mut overall_min_ts: Option<u64> = None;
+    let mut overall_max_ts: Option<u64> = None;
+
+    for chunk in consecutive_files.chunks(CHUNK_SIZE) {
+        // Load this chunk of files in parallel
+        let chunk_results: Vec<_> = chunk
+            .par_iter()
+            .filter_map(|metadata| {
+                let file = File::open(&metadata.path).ok()?;
+                let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
+                let reader = builder.build().ok()?;
+
+                let batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>().ok()?;
+
+                let file_data: Vec<(u64, TagSet)> = batches
+                    .par_iter()
+                    .flat_map(|batch| extract_tags_from_batch(batch))
+                    .collect();
+
+                let file_rows = file_data.len();
+                let file_min_ts = file_data.iter().map(|(ts, _)| *ts).min().unwrap_or(0);
+                let file_max_ts = file_data.iter().map(|(ts, _)| *ts).max().unwrap_or(0);
+
+                println!(
+                    "{:?}: {} rows",
+                    metadata.path.file_name().unwrap_or_default(),
+                    file_rows,
+                );
+
+                Some((file_data, file_min_ts, file_max_ts))
+            })
+            .collect();
+
+        // Add results from this chunk and check limits
+        for (file_data, file_min_ts, file_max_ts) in chunk_results {
+            all_data.extend(file_data);
+
+            // Update overall timestamp range
+            overall_min_ts = Some(overall_min_ts.map_or(file_min_ts, |m| m.min(file_min_ts)));
+            overall_max_ts = Some(overall_max_ts.map_or(file_max_ts, |m| m.max(file_max_ts)));
+
+            // Check limits
+            if all_data.len() >= max_rows {
+                all_data.truncate(max_rows);
+                break;
+            }
+
+            if let (Some(min), Some(max)) = (overall_min_ts, overall_max_ts) {
+                let duration_ns = max.saturating_sub(min);
+                if duration_ns >= max_duration_ns {
+                    break;
                 }
             }
         }
 
-        // Calculate file statistics
-        let file_rows = file_data.len();
-
-        let file_min_ts = file_data.iter().map(|(ts, _)| *ts).min().unwrap_or(0);
-        let file_max_ts = file_data.iter().map(|(ts, _)| *ts).max().unwrap_or(0);
-        let file_duration_ns = file_max_ts.saturating_sub(file_min_ts);
-        let file_duration_secs = file_duration_ns / 1_000_000_000;
-
-        // Calculate cardinality before and after adding this file
-        let cardinality_before = calculate_cardinality(&all_data);
-        all_data.extend(file_data);
-        let cardinality_after = calculate_cardinality(&all_data);
-        let file_cardinality = cardinality_after - cardinality_before;
-
-        // Update totals
-        total_rows += file_rows;
-        total_duration_ns += file_duration_ns;
-        total_cardinality = cardinality_after;
-
-        // Calculate total duration in seconds for display
-        let total_duration_secs = total_duration_ns / 1_000_000_000;
-
-        // Print statistics
-        println!("  Rows: {} ({} total)", file_rows, total_rows);
-        println!(
-            "  Duration: {}s ({} total)",
-            file_duration_secs, total_duration_secs
-        );
-        println!(
-            "  Cardinality: +{} ({} total)",
-            file_cardinality, total_cardinality
-        );
-        println!();
-
-        // Stop if we've reached either limit
-        if total_cardinality >= max_cardinality {
-            println!(
-                "Reached target cardinality of {}M. Stopping.",
-                max_cardinality / 1_000_000
-            );
-            println!(
-                "Loaded {} files with {} total rows\n",
-                file_index + 1,
-                total_rows
-            );
+        // Break out of chunk loop if we hit a limit
+        if all_data.len() >= max_rows {
             break;
         }
 
-        if total_duration_ns >= max_duration_ns {
-            let days = total_duration_ns / (24 * 60 * 60 * 1_000_000_000);
-            let hours =
-                (total_duration_ns % (24 * 60 * 60 * 1_000_000_000)) / (60 * 60 * 1_000_000_000);
-            println!(
-                "Reached target duration of 7 days ({} days {} hours). Stopping.",
-                days, hours
-            );
-            println!(
-                "Loaded {} files with {} total rows\n",
-                file_index + 1,
-                total_rows
-            );
-            break;
+        if let (Some(min), Some(max)) = (overall_min_ts, overall_max_ts) {
+            let duration_ns = max.saturating_sub(min);
+            if duration_ns >= max_duration_ns {
+                break;
+            }
         }
     }
 
-    println!("=== Final Statistics ===");
-    println!("Total rows: {}", total_rows);
-    println!("Total duration: {}s", total_duration_ns / 1_000_000_000);
-    println!("Total cardinality: {}", total_cardinality);
+    let cardinality = calculate_cardinality(&all_data);
+
+    println!("\nTotal rows: {}", all_data.len());
+    println!("Total cardinality: {}", cardinality);
     println!();
 
     Ok(all_data)

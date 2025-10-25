@@ -1,5 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use chrono::{Utc, TimeZone};
+use rayon::prelude::*;
 use std::collections::{BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufRead};
@@ -84,15 +85,18 @@ fn parse_line_protocol(line: &str) -> Option<(u64, TagSet)> {
 fn parse_line_protocol_file(path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let mut results = Vec::new();
 
-    for line in reader.lines() {
-        let line = line?;
-        if !line.trim().is_empty() && !line.starts_with('#')
-            && let Some(parsed) = parse_line_protocol(&line) {
-                results.push(parsed);
-            }
-    }
+    // Read all lines first
+    let lines: Vec<String> = reader
+        .lines()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Parse lines in parallel
+    let results: Vec<(u64, TagSet)> = lines
+        .par_iter()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .filter_map(|line| parse_line_protocol(line))
+        .collect();
 
     Ok(results)
 }
