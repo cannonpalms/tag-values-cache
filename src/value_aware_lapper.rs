@@ -50,8 +50,7 @@ where
     /// ];
     /// let vlapper = ValueAwareLapper::new(intervals);
     /// ```
-    pub fn new(mut intervals: Vec<Interval<T, V>>) -> Self {
-        intervals.sort_by(|a, b| a.start.cmp(&b.start));
+    pub fn new(intervals: Vec<Interval<T, V>>) -> Self {
         Self {
             lapper: Lapper::new(intervals),
         }
@@ -125,12 +124,9 @@ where
             }
 
             // Collect all merged intervals
-            let mut merged: Vec<_> = stack.into_iter().collect();
+            let merged: Vec<_> = stack.into_iter().collect();
 
-            // Sort by start position for Lapper (required for efficient queries)
-            merged.sort_by(|a, b| a.start.cmp(&b.start).then(a.stop.cmp(&b.stop)));
-
-            // Rebuild the lapper
+            // Rebuild the lapper (Lapper::new will sort internally)
             self.lapper = Lapper::new(merged);
         }
     }
