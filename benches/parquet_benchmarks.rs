@@ -420,9 +420,6 @@ fn bench_append_cache(c: &mut Criterion) {
         let initial_data = parsed_data[..split_point].to_vec();
         let append_data = parsed_data[split_point..].to_vec();
 
-        // Using TagSet for direct tag handling
-        let sorted_append = SortedData::from_unsorted(append_data.clone());
-
         group.throughput(Throughput::Elements(append_data.len() as u64));
 
         group.bench_function(format!("append_50pct_{}", name), |b| {
@@ -434,18 +431,16 @@ fn bench_append_cache(c: &mut Criterion) {
                             *resolution,
                         )
                         .unwrap(),
-                        sorted_append.clone(),
+                        append_data.clone(),
                     )
                 },
                 |(mut cache, data)| {
-                    cache.append_sorted(data).unwrap();
+                    cache.append_unsorted(data).unwrap();
                     black_box(cache);
                 },
                 criterion::BatchSize::SmallInput,
             );
         });
-
-        drop(sorted_append);
     }
 
     group.finish();
