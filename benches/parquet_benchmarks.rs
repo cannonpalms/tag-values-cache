@@ -41,7 +41,9 @@ struct FileMetadata {
 }
 
 /// Extract min/max timestamps from parquet file metadata statistics
-fn get_timestamp_range(metadata: &parquet::file::metadata::ParquetMetaData) -> (Option<i64>, Option<i64>) {
+fn get_timestamp_range(
+    metadata: &parquet::file::metadata::ParquetMetaData,
+) -> (Option<i64>, Option<i64>) {
     use parquet::file::statistics::Statistics;
 
     let mut overall_min: Option<i64> = None;
@@ -52,7 +54,11 @@ fn get_timestamp_range(metadata: &parquet::file::metadata::ParquetMetaData) -> (
         for column in row_group.columns() {
             // Look for time/timestamp column
             let col_name = column.column_descr().name().to_lowercase();
-            if col_name == "time" || col_name == "timestamp" || col_name == "_time" || col_name == "eventtime" {
+            if col_name == "time"
+                || col_name == "timestamp"
+                || col_name == "_time"
+                || col_name == "eventtime"
+            {
                 if let Some(stats) = column.statistics() {
                     // Try to extract as Int64 (most common for timestamps)
                     if let Statistics::Int64(int_stats) = stats {
@@ -291,34 +297,29 @@ fn bench_build_cache(c: &mut Criterion) {
         ("1minute", Duration::from_secs(60)),
         ("3minute", Duration::from_secs(180)),
         ("5minute", Duration::from_secs(300)),
+        ("1hour", Duration::from_secs(3600)),
     ];
 
     // Using TagSet for direct tag handling
     for (name, resolution) in &resolutions {
+        // Build cache once to get statistics on first iteration
+        let cache =
+            ValueAwareLapperCache::from_unsorted_with_resolution(parsed_data.clone(), *resolution)
+                .unwrap();
+
+        println!("\n=== {} Resolution ===", name);
+        println!("  Intervals: {}", cache.interval_count());
+        println!(
+            "  Size: {:.2} MB",
+            cache.size_bytes() as f64 / (1024.0 * 1024.0)
+        );
         group.bench_function(format!("{}_resolution", name), |b| {
-            // Build cache once to get statistics on first iteration
-            let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
-                parsed_data.clone(),
-                *resolution,
-            )
-            .unwrap();
-
-            println!("\n=== {} Resolution ===", name);
-            println!("  Intervals: {}", cache.interval_count());
-            println!(
-                "  Size: {:.2} MB",
-                cache.size_bytes() as f64 / (1024.0 * 1024.0)
-            );
-            drop(cache);
-
             b.iter_batched(
                 || parsed_data.clone(),
                 |data| {
-                    let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
-                        data,
-                        *resolution,
-                    )
-                    .unwrap();
+                    let cache =
+                        ValueAwareLapperCache::from_unsorted_with_resolution(data, *resolution)
+                            .unwrap();
                     black_box(cache);
                 },
                 criterion::BatchSize::SmallInput,
@@ -344,7 +345,7 @@ fn bench_query_cache(c: &mut Criterion) {
     let original_range_ns = original_max_ns - original_min_ns;
 
     // Use 10% of the wall-clock time range for queries
-    let wall_clock_range_ns = (original_range_ns as f64 * 0.10) as u64;
+    let wall_clock_range_ns_10pct = (original_range_ns as f64 * 0.10) as u64;
 
     let mut group = c.benchmark_group("parquet_cache_query");
 
@@ -356,20 +357,24 @@ fn bench_query_cache(c: &mut Criterion) {
         ("1minute", Duration::from_secs(60)),
         ("3minute", Duration::from_secs(180)),
         ("5minute", Duration::from_secs(300)),
+        ("1hour", Duration::from_secs(3600)),
     ];
 
     let n_queries = 100;
 
-    // Create test ranges distributed across the time span (in nanoseconds)
+    // Create test ranges for 10% queries - distributed across the time span (in nanoseconds)
     // Each range covers the same wall-clock duration
-    let test_ranges: Vec<std::ops::Range<u64>> = (0..n_queries)
+    let test_ranges_10pct: Vec<std::ops::Range<u64>> = (0..n_queries)
         .map(|i| {
             let start = original_min_ns
-                + ((original_range_ns - wall_clock_range_ns) * i as u64) / (n_queries as u64);
-            let end = start + wall_clock_range_ns;
+                + ((original_range_ns - wall_clock_range_ns_10pct) * i as u64) / (n_queries as u64);
+            let end = start + wall_clock_range_ns_10pct;
             start..end
         })
         .collect();
+
+    // Create test range for 100% query - entire time span
+    let test_range_100pct = original_min_ns..original_max_ns;
 
     group.throughput(Throughput::Elements(n_queries as u64));
 
@@ -383,9 +388,22 @@ fn bench_query_cache(c: &mut Criterion) {
             .unwrap();
 
             b.iter(|| {
-                for range in test_ranges.iter() {
+                for range in test_ranges_10pct.iter() {
                     black_box(cache.query_range(range.clone()));
                 }
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("range_100pct", name), |b| {
+            // Build cache for this resolution
+            let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
+                parsed_data.clone(),
+                *resolution,
+            )
+            .unwrap();
+
+            b.iter(|| {
+                black_box(cache.query_range(test_range_100pct.clone()));
             });
         });
     }
@@ -413,6 +431,7 @@ fn bench_append_cache(c: &mut Criterion) {
         ("1minute", Duration::from_secs(60)),
         ("3minute", Duration::from_secs(180)),
         ("5minute", Duration::from_secs(300)),
+        ("1hour", Duration::from_secs(3600)),
     ];
 
     // Test append for different timestamp resolutions
