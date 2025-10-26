@@ -171,12 +171,11 @@ impl ValueAwareLapperCache {
 
         // HashMap for O(1) tagset ID lookups
         // Pre-populate with existing tagsets to avoid creating duplicates
-        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
-            tagsets
-                .iter()
-                .enumerate()
-                .map(|(id, tagset)| (tagset.clone(), id))
-                .collect();
+        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> = tagsets
+            .iter()
+            .enumerate()
+            .map(|(id, tagset)| (tagset.clone(), id))
+            .collect();
 
         for (t, v) in points {
             // Bucket the timestamp according to the resolution
@@ -345,17 +344,17 @@ impl ValueAwareLapperCache {
                 // Remap the encoded tagset using the string ID remapping
                 let remapped_tagset: EncodedTagSet = local_tagset
                     .iter()
-                    .map(|(key_id, val_id)| {
-                        (string_id_remap[*key_id], string_id_remap[*val_id])
-                    })
+                    .map(|(key_id, val_id)| (string_id_remap[*key_id], string_id_remap[*val_id]))
                     .collect();
 
                 // Find or create global tagset ID
-                let global_id = *global_tagset_map.entry(remapped_tagset.clone()).or_insert_with(|| {
-                    let id = global_tagsets.len();
-                    global_tagsets.push(remapped_tagset);
-                    id
-                });
+                let global_id = *global_tagset_map
+                    .entry(remapped_tagset.clone())
+                    .or_insert_with(|| {
+                        let id = global_tagsets.len();
+                        global_tagsets.push(remapped_tagset);
+                        id
+                    });
 
                 tagset_id_remap.push(global_id);
             }
@@ -412,7 +411,10 @@ impl ValueAwareLapperCache {
             .map(|(encoded, dict, tagsets, map)| (dict, tagsets, map, encoded))
             .collect();
 
-        let encoded_chunks: Vec<_> = local_dicts.iter().map(|(_, _, _, enc)| enc.clone()).collect();
+        let encoded_chunks: Vec<_> = local_dicts
+            .iter()
+            .map(|(_, _, _, enc)| enc.clone())
+            .collect();
         let dict_data: Vec<_> = local_dicts
             .into_iter()
             .map(|(dict, tagsets, map, _)| (dict, tagsets, map))
@@ -524,7 +526,10 @@ impl ValueAwareLapperCache {
     /// # Performance
     /// Significantly faster than sorting first then calling `append_sorted`, especially for
     /// complex TagSets with many key-value pairs or long strings.
-    pub fn append_unsorted(&mut self, points: Vec<(Timestamp, TagSet)>) -> Result<(), CacheBuildError> {
+    pub fn append_unsorted(
+        &mut self,
+        points: Vec<(Timestamp, TagSet)>,
+    ) -> Result<(), CacheBuildError> {
         if points.is_empty() {
             return Ok(());
         }
@@ -548,7 +553,10 @@ impl ValueAwareLapperCache {
             .map(|(encoded, dict, tagsets, map)| (dict, tagsets, map, encoded))
             .collect();
 
-        let encoded_chunks: Vec<_> = local_dicts.iter().map(|(_, _, _, enc)| enc.clone()).collect();
+        let encoded_chunks: Vec<_> = local_dicts
+            .iter()
+            .map(|(_, _, _, enc)| enc.clone())
+            .collect();
         let dict_data: Vec<_> = local_dicts
             .into_iter()
             .map(|(dict, tagsets, map, _)| (dict, tagsets, map))
@@ -567,12 +575,12 @@ impl ValueAwareLapperCache {
             .collect();
 
         // Build final tagset ID remapping
-        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
-            self.tagsets
-                .iter()
-                .enumerate()
-                .map(|(id, tagset)| (tagset.clone(), id))
-                .collect();
+        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> = self
+            .tagsets
+            .iter()
+            .enumerate()
+            .map(|(id, tagset)| (tagset.clone(), id))
+            .collect();
 
         let final_id_remappings: Vec<Vec<usize>> = id_remappings
             .into_iter()
@@ -588,11 +596,13 @@ impl ValueAwareLapperCache {
                             })
                             .collect();
 
-                        *tagset_map.entry(remapped_tagset.clone()).or_insert_with(|| {
-                            let id = self.tagsets.len();
-                            self.tagsets.push(remapped_tagset);
-                            id
-                        })
+                        *tagset_map
+                            .entry(remapped_tagset.clone())
+                            .or_insert_with(|| {
+                                let id = self.tagsets.len();
+                                self.tagsets.push(remapped_tagset);
+                                id
+                            })
                     })
                     .collect()
             })
@@ -951,10 +961,7 @@ mod tests {
         let tag_b = make_tagset(&[("host", "server2"), ("env", "dev")]);
         let tag_c = make_tagset(&[("host", "server3"), ("env", "prod")]);
 
-        let initial_data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-        ];
+        let initial_data = vec![(1, tag_a.clone()), (2, tag_a.clone())];
 
         let append_data = vec![
             (5, tag_b.clone()),
@@ -966,39 +973,44 @@ mod tests {
         let resolution = Duration::from_secs(1);
 
         // Build cache using append_sorted path
-        let mut cache_sorted = ValueAwareLapperCache::from_unsorted_with_resolution(
-            initial_data.clone(),
-            resolution,
-        )
-        .unwrap();
+        let mut cache_sorted =
+            ValueAwareLapperCache::from_unsorted_with_resolution(initial_data.clone(), resolution)
+                .unwrap();
         let sorted_append = SortedData::from_unsorted(append_data.clone());
         cache_sorted.append_sorted(sorted_append).unwrap();
 
         // Build cache using append_unsorted path
-        let mut cache_unsorted = ValueAwareLapperCache::from_unsorted_with_resolution(
-            initial_data,
-            resolution,
-        )
-        .unwrap();
+        let mut cache_unsorted =
+            ValueAwareLapperCache::from_unsorted_with_resolution(initial_data, resolution).unwrap();
         cache_unsorted.append_unsorted(append_data).unwrap();
 
         // Both should have same number of intervals
-        assert_eq!(cache_sorted.interval_count(), cache_unsorted.interval_count());
+        assert_eq!(
+            cache_sorted.interval_count(),
+            cache_unsorted.interval_count()
+        );
 
         // Both should return same results for point queries
         for t in 0..15 {
             let result_sorted = cache_sorted.query_point(t);
             let result_unsorted = cache_unsorted.query_point(t);
-            assert_eq!(result_sorted.len(), result_unsorted.len(),
-                "Mismatch at timestamp {}", t);
+            assert_eq!(
+                result_sorted.len(),
+                result_unsorted.len(),
+                "Mismatch at timestamp {}",
+                t
+            );
 
             // Sort results for comparison (order doesn't matter)
             let mut sorted_vec = result_sorted.clone();
             sorted_vec.sort();
             let mut unsorted_vec = result_unsorted.clone();
             unsorted_vec.sort();
-            assert_eq!(sorted_vec, unsorted_vec,
-                "Different results at timestamp {}", t);
+            assert_eq!(
+                sorted_vec, unsorted_vec,
+                "Different results at timestamp {}",
+                t
+            );
         }
 
         // Both should return same results for range queries
@@ -1031,36 +1043,40 @@ mod tests {
 
         // Build using old path
         let sorted_data = SortedData::from_unsorted(data.clone());
-        let cache_sorted = ValueAwareLapperCache::from_sorted_with_resolution(
-            sorted_data,
-            resolution,
-        )
-        .unwrap();
+        let cache_sorted =
+            ValueAwareLapperCache::from_sorted_with_resolution(sorted_data, resolution).unwrap();
 
         // Build using new optimized path
-        let cache_unsorted = ValueAwareLapperCache::from_unsorted_with_resolution(
-            data,
-            resolution,
-        )
-        .unwrap();
+        let cache_unsorted =
+            ValueAwareLapperCache::from_unsorted_with_resolution(data, resolution).unwrap();
 
         // Both should have same number of intervals
-        assert_eq!(cache_sorted.interval_count(), cache_unsorted.interval_count());
+        assert_eq!(
+            cache_sorted.interval_count(),
+            cache_unsorted.interval_count()
+        );
 
         // Both should return same results for point queries
         for t in 0..15 {
             let result_sorted = cache_sorted.query_point(t);
             let result_unsorted = cache_unsorted.query_point(t);
-            assert_eq!(result_sorted.len(), result_unsorted.len(),
-                "Mismatch at timestamp {}", t);
+            assert_eq!(
+                result_sorted.len(),
+                result_unsorted.len(),
+                "Mismatch at timestamp {}",
+                t
+            );
 
             // Sort results for comparison (order doesn't matter)
             let mut sorted_vec = result_sorted.clone();
             sorted_vec.sort();
             let mut unsorted_vec = result_unsorted.clone();
             unsorted_vec.sort();
-            assert_eq!(sorted_vec, unsorted_vec,
-                "Different results at timestamp {}", t);
+            assert_eq!(
+                sorted_vec, unsorted_vec,
+                "Different results at timestamp {}",
+                t
+            );
         }
 
         // Both should return same results for range queries

@@ -15,6 +15,15 @@ use std::collections::HashSet;
 // Global data loaded once and shared across all benchmarks
 static PARQUET_DATA: OnceLock<Vec<(u64, TagSet)>> = OnceLock::new();
 
+// Global caches for each resolution, initialized lazily
+static CACHE_NANOSECOND: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+static CACHE_5SECOND: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+static CACHE_15SECOND: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+static CACHE_1MINUTE: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+static CACHE_3MINUTE: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+static CACHE_5MINUTE: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+static CACHE_1HOUR: OnceLock<ValueAwareLapperCache> = OnceLock::new();
+
 /// Calculate cardinality (unique tag combinations) from data
 fn calculate_cardinality(data: &[(u64, TagSet)]) -> usize {
     let mut unique_combinations = HashSet::new();
@@ -225,6 +234,42 @@ fn load_parquet_files(dir_path: &Path) -> std::io::Result<Vec<(u64, TagSet)>> {
     Ok(all_data)
 }
 
+/// Get or initialize a cache for a specific resolution
+fn get_cache_for_resolution(
+    resolution_name: &str,
+    resolution: Duration,
+) -> Option<&'static ValueAwareLapperCache> {
+    let parsed_data = get_parquet_data()?;
+
+    let cache_lock = match resolution_name {
+        "nanosecond" => &CACHE_NANOSECOND,
+        "5second" => &CACHE_5SECOND,
+        "15second" => &CACHE_15SECOND,
+        "1minute" => &CACHE_1MINUTE,
+        "3minute" => &CACHE_3MINUTE,
+        "5minute" => &CACHE_5MINUTE,
+        "1hour" => &CACHE_1HOUR,
+        _ => return None,
+    };
+
+    Some(cache_lock.get_or_init(|| {
+        println!("Initializing {} resolution cache...", resolution_name);
+        let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
+            parsed_data.clone(),
+            resolution,
+        )
+        .unwrap();
+
+        println!("  Intervals: {}", cache.interval_count());
+        println!(
+            "  Size: {:.2} MB",
+            cache.size_bytes() as f64 / (1024.0 * 1024.0)
+        );
+
+        cache
+    }))
+}
+
 /// Load the parquet data once and return a reference to it
 fn get_parquet_data() -> Option<&'static Vec<(u64, TagSet)>> {
     PARQUET_DATA.get_or_init(|| {
@@ -302,18 +347,25 @@ fn bench_build_cache(c: &mut Criterion) {
 
     // Using TagSet for direct tag handling
     for (name, resolution) in &resolutions {
-        // Build cache once to get statistics on first iteration
-        let cache =
-            ValueAwareLapperCache::from_unsorted_with_resolution(parsed_data.clone(), *resolution)
+        let mut stats_printed = false;
+        group.bench_function(format!("{}_resolution", name), |b| {
+            if !stats_printed {
+                // Build cache once to get statistics on first iteration
+                let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
+                    parsed_data.clone(),
+                    *resolution,
+                )
                 .unwrap();
 
-        println!("\n=== {} Resolution ===", name);
-        println!("  Intervals: {}", cache.interval_count());
-        println!(
-            "  Size: {:.2} MB",
-            cache.size_bytes() as f64 / (1024.0 * 1024.0)
-        );
-        group.bench_function(format!("{}_resolution", name), |b| {
+                println!("\n=== {} Resolution ===", name);
+                println!("  Intervals: {}", cache.interval_count());
+                println!(
+                    "  Size: {:.2} MB",
+                    cache.size_bytes() as f64 / (1024.0 * 1024.0)
+                );
+
+                stats_printed = true;
+            }
             b.iter_batched(
                 || parsed_data.clone(),
                 |data| {
@@ -380,12 +432,11 @@ fn bench_query_cache(c: &mut Criterion) {
 
     for (name, resolution) in &resolutions {
         group.bench_function(BenchmarkId::new("range_10pct", name), |b| {
-            // Build cache for this resolution
-            let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
-                parsed_data.clone(),
-                *resolution,
-            )
-            .unwrap();
+            // Get or initialize cache for this resolution (lazy initialization)
+            let cache = match get_cache_for_resolution(name, *resolution) {
+                Some(c) => c,
+                None => return,
+            };
 
             b.iter(|| {
                 for range in test_ranges_10pct.iter() {
@@ -395,12 +446,11 @@ fn bench_query_cache(c: &mut Criterion) {
         });
 
         group.bench_function(BenchmarkId::new("range_100pct", name), |b| {
-            // Build cache for this resolution
-            let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
-                parsed_data.clone(),
-                *resolution,
-            )
-            .unwrap();
+            // Get or initialize cache for this resolution (lazy initialization)
+            let cache = match get_cache_for_resolution(name, *resolution) {
+                Some(c) => c,
+                None => return,
+            };
 
             b.iter(|| {
                 black_box(cache.query_range(test_range_100pct.clone()));
