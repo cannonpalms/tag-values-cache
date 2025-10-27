@@ -9,6 +9,7 @@ use std::ops::Range;
 use std::time::Duration;
 
 use arrow_util::dictionary::StringDictionary;
+use indexmap::IndexSet;
 use rayon::prelude::*;
 use rust_lapper::Interval;
 
@@ -43,8 +44,8 @@ pub struct ValueAwareLapperCache {
     /// Dictionary for all unique strings (both keys and values)
     string_dict: StringDictionary<usize>,
 
-    /// Maps from TagSet ID to its encoded representation
-    tagsets: Vec<EncodedTagSet>,
+    /// Set of encoded TagSets with preserved insertion order (index = ID)
+    tagsets: IndexSet<EncodedTagSet>,
 
     /// Time resolution for bucketing timestamps
     /// Duration::from_nanos(1) = nanosecond resolution (no bucketing)
@@ -103,7 +104,7 @@ impl ValueAwareLapperCache {
     /// Decode a tagset ID to a vector of (&str, &str) pairs
     fn decode_tagset(&self, id: usize) -> Vec<(&str, &str)> {
         self.tagsets
-            .get(id)
+            .get_index(id)
             .map(|encoded| {
                 encoded
                     .iter()
@@ -156,7 +157,7 @@ impl ValueAwareLapperCache {
         points: Vec<(Timestamp, TagSet)>,
         resolution: Duration,
         string_dict: &mut StringDictionary<usize>,
-        tagsets: &mut Vec<EncodedTagSet>,
+        tagsets: &mut IndexSet<EncodedTagSet>,
     ) -> Result<Vec<Interval<u64, usize>>, CacheBuildError> {
         let mut intervals = Vec::new();
 
@@ -168,14 +169,6 @@ impl ValueAwareLapperCache {
         // Track open intervals for each encoded value to handle overlapping
         let mut open_intervals: std::collections::HashMap<usize, (u64, u64)> =
             std::collections::HashMap::new();
-
-        // HashMap for O(1) tagset ID lookups
-        // Pre-populate with existing tagsets to avoid creating duplicates
-        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> = tagsets
-            .iter()
-            .enumerate()
-            .map(|(id, tagset)| (tagset.clone(), id))
-            .collect();
 
         for (t, v) in points {
             // Bucket the timestamp according to the resolution
@@ -191,12 +184,8 @@ impl ValueAwareLapperCache {
                 })
                 .collect();
 
-            // Find or create tagset ID using HashMap for O(1) lookup
-            let encoded_id = *tagset_map.entry(encoded.clone()).or_insert_with(|| {
-                let id = tagsets.len();
-                tagsets.push(encoded);
-                id
-            });
+            // Find or create tagset ID using IndexSet for O(1) lookup
+            let (encoded_id, _) = tagsets.insert_full(encoded);
 
             let next_end = bucketed_t
                 .checked_add(1)
@@ -252,7 +241,7 @@ impl ValueAwareLapperCache {
 
         // Initialize the string dictionary and tagset storage
         let mut string_dict = StringDictionary::new();
-        let mut tagsets = Vec::new();
+        let mut tagsets = IndexSet::new();
 
         // Build intervals with encoding
         let intervals = Self::build_intervals(points, resolution, &mut string_dict, &mut tagsets)?;
@@ -275,13 +264,10 @@ impl ValueAwareLapperCache {
     ) -> (
         Vec<(Timestamp, usize)>,
         StringDictionary<usize>,
-        Vec<EncodedTagSet>,
-        std::collections::HashMap<EncodedTagSet, usize>,
+        IndexSet<EncodedTagSet>,
     ) {
         let mut string_dict = StringDictionary::new();
-        let mut tagsets = Vec::new();
-        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
-            std::collections::HashMap::new();
+        let mut tagsets = IndexSet::new();
 
         let encoded_points: Vec<(Timestamp, usize)> = chunk
             .iter()
@@ -296,40 +282,30 @@ impl ValueAwareLapperCache {
                     })
                     .collect();
 
-                // Find or create tagset ID using HashMap for O(1) lookup
-                let encoded_id = *tagset_map.entry(encoded.clone()).or_insert_with(|| {
-                    let id = tagsets.len();
-                    tagsets.push(encoded);
-                    id
-                });
+                // Find or create tagset ID using IndexSet for O(1) lookup
+                let (encoded_id, _) = tagsets.insert_full(encoded);
 
                 (*ts, encoded_id)
             })
             .collect();
 
-        (encoded_points, string_dict, tagsets, tagset_map)
+        (encoded_points, string_dict, tagsets)
     }
 
     /// Merge multiple local dictionaries into a global dictionary.
     /// Returns (global_dict, global_tagsets, id_remapping_per_chunk)
     fn merge_dictionaries(
-        local_dicts: Vec<(
-            StringDictionary<usize>,
-            Vec<EncodedTagSet>,
-            std::collections::HashMap<EncodedTagSet, usize>,
-        )>,
+        local_dicts: Vec<(StringDictionary<usize>, IndexSet<EncodedTagSet>)>,
     ) -> (
         StringDictionary<usize>,
-        Vec<EncodedTagSet>,
+        IndexSet<EncodedTagSet>,
         Vec<Vec<usize>>, // Remapping table: chunk_idx -> [local_id -> global_id]
     ) {
         let mut global_dict = StringDictionary::new();
-        let mut global_tagsets = Vec::new();
-        let mut global_tagset_map: std::collections::HashMap<EncodedTagSet, usize> =
-            std::collections::HashMap::new();
+        let mut global_tagsets = IndexSet::new();
         let mut id_remappings = Vec::new();
 
-        for (local_dict, local_tagsets, _local_tagset_map) in local_dicts {
+        for (local_dict, local_tagsets) in local_dicts {
             // Build string ID remapping for this chunk
             let string_id_remap: Vec<usize> = (0..local_dict.values().len())
                 .map(|local_id| {
@@ -348,14 +324,7 @@ impl ValueAwareLapperCache {
                     .collect();
 
                 // Find or create global tagset ID
-                let global_id = *global_tagset_map
-                    .entry(remapped_tagset.clone())
-                    .or_insert_with(|| {
-                        let id = global_tagsets.len();
-                        global_tagsets.push(remapped_tagset);
-                        id
-                    });
-
+                let (global_id, _) = global_tagsets.insert_full(remapped_tagset);
                 tagset_id_remap.push(global_id);
             }
 
@@ -386,7 +355,7 @@ impl ValueAwareLapperCache {
             return Ok(Self {
                 value_lapper: ValueAwareLapper::new(vec![]),
                 string_dict: StringDictionary::new(),
-                tagsets: Vec::new(),
+                tagsets: IndexSet::new(),
                 resolution,
             });
         }
@@ -405,16 +374,13 @@ impl ValueAwareLapperCache {
         // Separate the results
         let local_dicts: Vec<_> = local_results
             .into_iter()
-            .map(|(encoded, dict, tagsets, map)| (dict, tagsets, map, encoded))
+            .map(|(encoded, dict, tagsets)| (dict, tagsets, encoded))
             .collect();
 
-        let encoded_chunks: Vec<_> = local_dicts
-            .iter()
-            .map(|(_, _, _, enc)| enc.clone())
-            .collect();
+        let encoded_chunks: Vec<_> = local_dicts.iter().map(|(_, _, enc)| enc.clone()).collect();
         let dict_data: Vec<_> = local_dicts
             .into_iter()
-            .map(|(dict, tagsets, map, _)| (dict, tagsets, map))
+            .map(|(dict, tagsets, _)| (dict, tagsets))
             .collect();
 
         // Merge dictionaries into global dictionary
@@ -544,16 +510,13 @@ impl ValueAwareLapperCache {
         // Separate the results
         let local_dicts: Vec<_> = local_results
             .into_iter()
-            .map(|(encoded, dict, tagsets, map)| (dict, tagsets, map, encoded))
+            .map(|(encoded, dict, tagsets)| (dict, tagsets, encoded))
             .collect();
 
-        let encoded_chunks: Vec<_> = local_dicts
-            .iter()
-            .map(|(_, _, _, enc)| enc.clone())
-            .collect();
+        let encoded_chunks: Vec<_> = local_dicts.iter().map(|(_, _, enc)| enc.clone()).collect();
         let dict_data: Vec<_> = local_dicts
             .into_iter()
-            .map(|(dict, tagsets, map, _)| (dict, tagsets, map))
+            .map(|(dict, tagsets, _)| (dict, tagsets))
             .collect();
 
         // Merge new dictionaries with existing dictionary
@@ -569,20 +532,13 @@ impl ValueAwareLapperCache {
             .collect();
 
         // Build final tagset ID remapping
-        let mut tagset_map: std::collections::HashMap<EncodedTagSet, usize> = self
-            .tagsets
-            .iter()
-            .enumerate()
-            .map(|(id, tagset)| (tagset.clone(), id))
-            .collect();
-
         let final_id_remappings: Vec<Vec<usize>> = id_remappings
             .into_iter()
             .map(|chunk_remap| {
                 chunk_remap
                     .into_iter()
                     .map(|new_tagset_id| {
-                        let new_tagset = &new_tagsets[new_tagset_id];
+                        let new_tagset = new_tagsets.get_index(new_tagset_id).unwrap();
                         let remapped_tagset: EncodedTagSet = new_tagset
                             .iter()
                             .map(|(key_id, val_id)| {
@@ -590,13 +546,8 @@ impl ValueAwareLapperCache {
                             })
                             .collect();
 
-                        *tagset_map
-                            .entry(remapped_tagset.clone())
-                            .or_insert_with(|| {
-                                let id = self.tagsets.len();
-                                self.tagsets.push(remapped_tagset);
-                                id
-                            })
+                        let (id, _) = self.tagsets.insert_full(remapped_tagset);
+                        id
                     })
                     .collect()
             })
@@ -678,7 +629,8 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
         size += self.string_dict.size();
 
         // Size of the tagsets array
-        size += self.tagsets.capacity() * std::mem::size_of::<EncodedTagSet>();
+        // IndexSet overhead (approximate)
+        size += self.tagsets.len() * std::mem::size_of::<EncodedTagSet>();
         for tagset in &self.tagsets {
             size += tagset.capacity() * std::mem::size_of::<(usize, usize)>();
         }
