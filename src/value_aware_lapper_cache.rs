@@ -572,13 +572,9 @@ impl ValueAwareLapperCache {
         // Build intervals from pre-sorted encoded data
         let new_intervals = Self::build_intervals_from_encoded(encoded_points, self.resolution)?;
 
-        // Collect all existing intervals
-        let mut all_intervals: Vec<_> = self.value_lapper.iter().cloned().collect();
-        all_intervals.extend(new_intervals);
-
-        // Rebuild with all intervals and merge
-        self.value_lapper = ValueAwareLapper::new(all_intervals);
-        self.value_lapper.merge_with_values();
+        // Use the efficient append method that avoids cloning
+        let old_lapper = std::mem::replace(&mut self.value_lapper, ValueAwareLapper::new(vec![]));
+        self.value_lapper = old_lapper.append_and_merge(new_intervals);
 
         Ok(())
     }
@@ -607,13 +603,9 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
             &mut self.tagsets,
         )?;
 
-        // Collect all existing intervals
-        let mut all_intervals: Vec<_> = self.value_lapper.iter().cloned().collect();
-        all_intervals.extend(new_intervals);
-
-        // Rebuild with all intervals and merge
-        self.value_lapper = ValueAwareLapper::new(all_intervals);
-        self.value_lapper.merge_with_values();
+        // Use the efficient append method that avoids cloning
+        let old_lapper = std::mem::replace(&mut self.value_lapper, ValueAwareLapper::new(vec![]));
+        self.value_lapper = old_lapper.append_and_merge(new_intervals);
 
         Ok(())
     }

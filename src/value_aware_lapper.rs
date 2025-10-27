@@ -215,6 +215,21 @@ where
     pub fn find_range(&self, range: Range<T>) -> impl Iterator<Item = &Interval<T, V>> {
         self.find(range.start, range.end)
     }
+
+    /// Efficiently append new intervals and merge with existing ones.
+    ///
+    /// This method avoids cloning existing intervals by taking ownership of self
+    /// and reconstructing with all intervals combined.
+    pub fn append_and_merge(self, new_intervals: Vec<Interval<T, V>>) -> Self {
+        // Extract existing intervals by consuming self
+        let mut all_intervals = self.lapper.intervals;
+        all_intervals.extend(new_intervals);
+
+        // Create new instance and merge
+        let mut new_lapper = Self::new(all_intervals);
+        new_lapper.merge_with_values();
+        new_lapper
+    }
 }
 
 impl<T, V> fmt::Debug for ValueAwareLapper<T, V>
