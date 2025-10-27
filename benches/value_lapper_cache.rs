@@ -3,9 +3,7 @@ mod data_loader;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::sync::OnceLock;
 use std::time::Duration;
-use tag_values_cache::{
-    IntervalCache, TagSet, ValueAwareLapperCache,
-};
+use tag_values_cache::{IntervalCache, TagSet, ValueAwareLapperCache};
 
 // Global data loaded once and shared across all benchmarks
 static PARQUET_DATA: OnceLock<Vec<(u64, TagSet)>> = OnceLock::new();
@@ -18,7 +16,6 @@ static CACHE_1MINUTE: OnceLock<ValueAwareLapperCache> = OnceLock::new();
 static CACHE_3MINUTE: OnceLock<ValueAwareLapperCache> = OnceLock::new();
 static CACHE_5MINUTE: OnceLock<ValueAwareLapperCache> = OnceLock::new();
 static CACHE_1HOUR: OnceLock<ValueAwareLapperCache> = OnceLock::new();
-
 
 /// Get or initialize a cache for a specific resolution
 fn get_cache_for_resolution(
@@ -40,11 +37,9 @@ fn get_cache_for_resolution(
 
     Some(cache_lock.get_or_init(|| {
         println!("Initializing {} resolution cache...", resolution_name);
-        let cache = ValueAwareLapperCache::from_unsorted_with_resolution(
-            parsed_data.clone(),
-            resolution,
-        )
-        .unwrap();
+        let cache =
+            ValueAwareLapperCache::from_unsorted_with_resolution(parsed_data.clone(), resolution)
+                .unwrap();
 
         println!("  Intervals: {}", cache.interval_count());
         println!(
@@ -58,13 +53,11 @@ fn get_cache_for_resolution(
 
 /// Load the data once and return a reference to it
 fn get_parquet_data() -> Option<&'static Vec<(u64, TagSet)>> {
-    PARQUET_DATA.get_or_init(|| {
-        match data_loader::load_data() {
-            Ok(data) => data,
-            Err(e) => {
-                eprintln!("Error loading data: {}", e);
-                Vec::new()
-            }
+    PARQUET_DATA.get_or_init(|| match data_loader::load_data() {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error loading data: {}", e);
+            Vec::new()
         }
     });
 
@@ -268,6 +261,6 @@ criterion_group!(
     benches,
     bench_build_cache,
     bench_query_cache,
-    // bench_append_cache, // Temporarily disabled - takes a while and not a current focus
+    bench_append_cache,
 );
 criterion_main!(benches);
