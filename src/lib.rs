@@ -824,8 +824,8 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
         if let Some(column_type) = field.metadata().get("iox::column::type") {
             if column_type == "iox::column_type::timestamp" {
                 ts_idx = Some(idx);
-            } else {
-                // Only include Utf8 columns (tags)
+            } else if column_type == "iox::column_type::tag" {
+                // Only include columns explicitly marked as tags
                 match field.data_type() {
                     DataType::Utf8 | DataType::Dictionary(_, _) => {
                         tag_columns.push((idx, field.name().clone()));
@@ -833,6 +833,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                     _ => {} // Skip non-string columns
                 }
             }
+            // Skip other column types (fields, etc.)
         } else {
             // If no metadata, check field name for time column
             let name_lower = field.name().to_lowercase();
@@ -842,15 +843,8 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                 || name_lower == "eventtime"
             {
                 ts_idx = Some(idx);
-            } else {
-                // Only include Utf8 columns (tags)
-                match field.data_type() {
-                    DataType::Utf8 | DataType::Dictionary(_, _) => {
-                        tag_columns.push((idx, field.name().clone()));
-                    }
-                    _ => {} // Skip non-string columns
-                }
             }
+            // Skip columns without metadata (don't assume they're tags)
         }
     }
 

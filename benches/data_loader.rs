@@ -372,42 +372,18 @@ fn parse_line_protocol(line: &str) -> Option<(u64, TagSet)> {
         measurement.to_string(),
     ));
 
-    // Parse tags - only keep specific tags we're interested in
-    let allowed_tags = [
-        "kubernetes_namespace",
-        "host",
-        "job",
-        "applicationId",
-        "pod",
-        "instance"
-    ];
-
+    // Parse tags - include all tags
     for tag_part in tag_parts {
         if let Some((key, value)) = tag_part.split_once('=') {
-            if allowed_tags.contains(&key) {
-                tag_set.insert((
-                    key.to_string(),
-                    value.to_string(),
-                ));
-            }
+            tag_set.insert((
+                key.to_string(),
+                value.to_string(),
+            ));
         }
     }
 
-    // Parse fields (middle part) - convert all to strings for tags
-    let fields = parts[1];
-    for field_part in fields.split(',') {
-        if let Some((key, value_str)) = field_part.split_once('=') {
-            let string_value = if value_str.starts_with('"') && value_str.ends_with('"') {
-                value_str[1..value_str.len()-1].to_string()
-            } else if value_str.ends_with('i') {
-                value_str.trim_end_matches('i').to_string()
-            } else {
-                value_str.to_string()
-            };
-
-            tag_set.insert((format!("_field_{}", key), string_value));
-        }
-    }
+    // Skip fields - we only want tags for cardinality calculation
+    // Fields are in parts[1] but we don't include them in the TagSet
 
     Some((timestamp, tag_set))
 }
