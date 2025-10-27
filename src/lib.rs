@@ -315,7 +315,7 @@ where
     /// A set of references to all unique values within the range.
     /// Returns an empty set if no values exist in the range.
     /// The order of values in the set is unspecified.
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>>;
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>>;
 
     /// Append a batch of pre-sorted timestamp-value pairs to the cache.
     ///

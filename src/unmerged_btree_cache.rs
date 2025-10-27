@@ -107,7 +107,7 @@ where
         results
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         let mut results = Vec::new();
         let mut seen = HashSet::new();
 
@@ -238,7 +238,7 @@ mod tests {
         let cache: UnmergedBTreeCache<TagSet> = UnmergedBTreeCache::new(vec![]).unwrap();
 
         assert_eq!(cache.query_point(1).len(), 0);
-        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.query_range(&(0..100)).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 

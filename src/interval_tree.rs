@@ -50,8 +50,8 @@ where
         self.query_point_impl(t)
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
-        self.query_range_impl(range)
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+        self.query_range_impl(range.clone())
     }
 
     fn append_sorted(&mut self, sorted_data: crate::SortedData<V>) -> Result<(), CacheBuildError> {
@@ -285,7 +285,7 @@ mod tests {
         let cache: IntervalTreeCache<TagSet> = IntervalTreeCache::new(vec![]).unwrap();
 
         assert_eq!(cache.query_point(1).len(), 0);
-        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.query_range(&(0..100)).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 

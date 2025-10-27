@@ -404,7 +404,7 @@ where
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         let mut results_set = HashSet::new();
 
         if self.nodes.is_empty() {
@@ -412,7 +412,7 @@ where
         }
 
         // Start from root (index 0)
-        self.query_range_recursive(0, &range, &mut results_set);
+        self.query_range_recursive(0, range, &mut results_set);
 
         results_set.into_iter()
             .map(|v| v.into_iter()
@@ -542,7 +542,7 @@ mod tests {
         let cache: SegmentTreeCache<TagSet> = SegmentTreeCache::new(vec![]).unwrap();
 
         assert_eq!(cache.query_point(1).len(), 0);
-        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.query_range(&(0..100)).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 

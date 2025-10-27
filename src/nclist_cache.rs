@@ -321,7 +321,7 @@ where
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         let mut results_set = HashSet::new();
 
         if self.intervals.is_empty() {
@@ -336,7 +336,7 @@ where
         for i in 0..first_after {
             // An interval overlaps if its end > range.start
             if self.intervals[i].end > range.start {
-                self.query_range_from(&range, i, &mut results_set);
+                self.query_range_from(range, i, &mut results_set);
             }
         }
 
@@ -460,7 +460,7 @@ mod tests {
         let cache: NCListCache<TagSet> = NCListCache::new(vec![]).unwrap();
 
         assert_eq!(cache.query_point(1).len(), 0);
-        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.query_range(&(0..100)).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 

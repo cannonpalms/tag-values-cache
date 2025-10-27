@@ -209,10 +209,10 @@ where
             .collect()
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         let mut seen = HashSet::new();
         self.tree
-            .iter_overlaps(&range)
+            .iter_overlaps(range)
             .filter_map(|(_, idx)| self.intervals.get(*idx).and_then(|(_, v)| {
                 if seen.insert(v) {
                     Some(v.into_iter()
@@ -325,7 +325,7 @@ mod tests {
         let cache: InteravlCache<TagSet> = InteravlCache::new(vec![]).unwrap();
 
         assert_eq!(cache.query_point(1).len(), 0);
-        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.query_range(&(0..100)).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 

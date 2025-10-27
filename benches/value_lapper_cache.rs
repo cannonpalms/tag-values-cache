@@ -189,7 +189,7 @@ fn bench_query_cache(c: &mut Criterion) {
 
             b.iter(|| {
                 for range in test_ranges_10pct.iter() {
-                    black_box(cache.query_range(range.clone()));
+                    black_box(cache.query_range(range));
                 }
             });
         });
@@ -202,7 +202,7 @@ fn bench_query_cache(c: &mut Criterion) {
             };
 
             b.iter(|| {
-                black_box(cache.query_range(test_range_100pct.clone()));
+                black_box(cache.query_range(&test_range_100pct));
             });
         });
     }

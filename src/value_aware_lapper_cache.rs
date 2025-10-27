@@ -79,7 +79,7 @@ impl ValueAwareLapperCache {
     }
 
     /// Query and return dictionary IDs for a range
-    fn query_range_ids(&self, range: Range<Timestamp>) -> HashSet<usize> {
+    fn query_range_ids(&self, range: &Range<Timestamp>) -> HashSet<usize> {
         let bucketed_start = Self::bucket_timestamp(range.start, self.resolution);
         let bucketed_end = Self::bucket_timestamp(range.end, self.resolution);
 
@@ -127,7 +127,7 @@ impl ValueAwareLapperCache {
     }
 
     /// Query for values in a range and return decoded tag pairs
-    fn query_range_decoded(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+    fn query_range_decoded(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         self.query_range_ids(range)
             .into_iter()
             .map(|id| self.decode_tagset(id))
@@ -649,7 +649,7 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
         self.query_point_decoded(t)
     }
 
-    fn query_range(&self, range: Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
+    fn query_range(&self, range: &Range<Timestamp>) -> Vec<Vec<(&str, &str)>> {
         self.query_range_decoded(range)
     }
 
@@ -738,7 +738,7 @@ mod tests {
         let cache: ValueAwareLapperCache = ValueAwareLapperCache::new(vec![]).unwrap();
 
         assert_eq!(cache.query_point(1).len(), 0);
-        assert_eq!(cache.query_range(0..100).len(), 0);
+        assert_eq!(cache.query_range(&(0..100)).len(), 0);
         assert_eq!(cache.interval_count(), 0);
     }
 
@@ -812,7 +812,7 @@ mod tests {
         let cache = ValueAwareLapperCache::new(data).unwrap();
 
         // Query range [1, 6) should get tag_a and tag_b
-        let results = cache.query_range(1..6);
+        let results = cache.query_range(&(1..6));
         assert_eq!(results.len(), 2);
 
         // Check both tagsets are present
@@ -826,10 +826,10 @@ mod tests {
         assert!(has_server2);
 
         // Query range [0, 1) should be empty (before any data)
-        assert_eq!(cache.query_range(0..1).len(), 0);
+        assert_eq!(cache.query_range(&(0..1)).len(), 0);
 
         // Query range [3, 5) should be empty (gap in data)
-        assert_eq!(cache.query_range(3..5).len(), 0);
+        assert_eq!(cache.query_range(&(3..5)).len(), 0);
     }
 
     #[test]
@@ -1015,9 +1015,9 @@ mod tests {
 
         // Both should return same results for range queries
         let range = 0..15;
-        let mut result_sorted = cache_sorted.query_range(range.clone());
+        let mut result_sorted = cache_sorted.query_range(&range);
         result_sorted.sort();
-        let mut result_unsorted = cache_unsorted.query_range(range);
+        let mut result_unsorted = cache_unsorted.query_range(&range);
         result_unsorted.sort();
         assert_eq!(result_sorted, result_unsorted);
     }
@@ -1081,9 +1081,9 @@ mod tests {
 
         // Both should return same results for range queries
         let range = 0..15;
-        let mut result_sorted = cache_sorted.query_range(range.clone());
+        let mut result_sorted = cache_sorted.query_range(&range);
         result_sorted.sort();
-        let mut result_unsorted = cache_unsorted.query_range(range);
+        let mut result_unsorted = cache_unsorted.query_range(&range);
         result_unsorted.sort();
         assert_eq!(result_sorted, result_unsorted);
     }

@@ -702,28 +702,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(tree_cache.query_range(range.clone()));
+        black_box(tree_cache.query_range(range));
     }
     let tree_range_time = start.elapsed();
     println!("  IntervalTreeCache: {}", format_duration(tree_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(vec_cache.query_range(range.clone()));
+        black_box(vec_cache.query_range(range));
     }
     let vec_range_time = start.elapsed();
     println!("  VecCache: {}", format_duration(vec_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(lapper_cache.query_range(range.clone()));
+        black_box(lapper_cache.query_range(range));
     }
     let lapper_range_time = start.elapsed();
     println!("  LapperCache: {}", format_duration(lapper_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(value_aware_lapper_cache.query_range(range.clone()));
+        black_box(value_aware_lapper_cache.query_range(range));
     }
     let value_lapper_range_time = start.elapsed();
     println!(
@@ -733,21 +733,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(btree_cache.query_range(range.clone()));
+        black_box(btree_cache.query_range(range));
     }
     let btree_range_time = start.elapsed();
     println!("  BTreeCache: {}", format_duration(btree_range_time));
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(nclist_cache.query_range(range.clone()));
+        black_box(nclist_cache.query_range(range));
     }
     let nclist_range_time = start.elapsed();
     println!("  NCListCache: {}", format_duration(nclist_range_time));
 
     // let start = Instant::now();
     // for range in &test_ranges {
-    //     black_box(segment_tree_cache.query_range(range.clone()));
+    //     black_box(segment_tree_cache.query_range(range));
     // }
     // let segment_tree_range_time = start.elapsed();
     // println!(
@@ -757,7 +757,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
     for range in &test_ranges {
-        black_box(unmerged_btree_cache.query_range(range.clone()));
+        black_box(unmerged_btree_cache.query_range(range));
     }
     let unmerged_btree_range_time = start.elapsed();
     println!(
@@ -880,14 +880,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify range queries
     for range in &test_ranges {
-        let tree_result = tree_cache.query_range(range.clone());
-        let vec_result = vec_cache.query_range(range.clone());
-        let lapper_result = lapper_cache.query_range(range.clone());
-        let value_lapper_result = value_aware_lapper_cache.query_range(range.clone());
-        let btree_result = btree_cache.query_range(range.clone());
-        let nclist_result = nclist_cache.query_range(range.clone());
-        // let segment_tree_result = segment_tree_cache.query_range(range.clone());
-        let unmerged_btree_result = unmerged_btree_cache.query_range(range.clone());
+        let tree_result = tree_cache.query_range(range);
+        let vec_result = vec_cache.query_range(range);
+        let lapper_result = lapper_cache.query_range(range);
+        let value_lapper_result = value_aware_lapper_cache.query_range(range);
+        let btree_result = btree_cache.query_range(range);
+        let nclist_result = nclist_cache.query_range(range);
+        // let segment_tree_result = segment_tree_cache.query_range(range);
+        let unmerged_btree_result = unmerged_btree_cache.query_range(range);
 
         // All caches now return HashSet<&RecordBatchRow>, so comparison works directly
 
