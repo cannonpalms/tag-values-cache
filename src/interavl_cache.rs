@@ -201,11 +201,13 @@ where
 
         self.tree
             .iter_overlaps(&point_interval)
-            .filter_map(|(_, idx)| self.intervals.get(*idx).map(|(_, v)| {
-                v.into_iter()
-                    .map(|(k, v)| (k.as_str(), v.as_str()))
-                    .collect()
-            }))
+            .filter_map(|(_, idx)| {
+                self.intervals.get(*idx).map(|(_, v)| {
+                    v.into_iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect()
+                })
+            })
             .collect()
     }
 
@@ -213,15 +215,19 @@ where
         let mut seen = HashSet::new();
         self.tree
             .iter_overlaps(range)
-            .filter_map(|(_, idx)| self.intervals.get(*idx).and_then(|(_, v)| {
-                if seen.insert(v) {
-                    Some(v.into_iter()
-                        .map(|(k, v)| (k.as_str(), v.as_str()))
-                        .collect())
-                } else {
-                    None
-                }
-            }))
+            .filter_map(|(_, idx)| {
+                self.intervals.get(*idx).and_then(|(_, v)| {
+                    if seen.insert(v) {
+                        Some(
+                            v.into_iter()
+                                .map(|(k, v)| (k.as_str(), v.as_str()))
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+            })
             .collect()
     }
 
@@ -289,7 +295,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -297,11 +306,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = InteravlCache::new(data).unwrap();
 
@@ -333,11 +338,7 @@ mod tests {
     fn test_interavl_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = InteravlCache::new(data).unwrap();
 
@@ -348,4 +349,3 @@ mod tests {
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }
-

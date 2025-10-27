@@ -96,9 +96,7 @@ where
     ///
     /// Takes a list of intervals and merges any that are adjacent (touching) or overlapping
     /// and have the same value. Also removes any duplicate intervals.
-    fn merge_intervals(
-        mut intervals: Vec<(Range<u64>, V)>,
-    ) -> Vec<(Range<u64>, V)> {
+    fn merge_intervals(mut intervals: Vec<(Range<u64>, V)>) -> Vec<(Range<u64>, V)> {
         if intervals.is_empty() {
             return intervals;
         }
@@ -212,7 +210,12 @@ where
     ///
     /// This recursively traverses the NCList hierarchy to find all intervals
     /// that overlap with the query range.
-    fn query_range_from<'a>(&'a self, range: &Range<Timestamp>, idx: usize, results: &mut HashSet<&'a V>) {
+    fn query_range_from<'a>(
+        &'a self,
+        range: &Range<Timestamp>,
+        idx: usize,
+        results: &mut HashSet<&'a V>,
+    ) {
         let interval = &self.intervals[idx];
 
         // Check if this interval overlaps with the query range
@@ -278,7 +281,8 @@ where
         // This ordering is critical for the NCList algorithm
         let mut sorted_intervals = merged;
         sorted_intervals.sort_by(|a, b| {
-            a.0.start.cmp(&b.0.start)
+            a.0.start
+                .cmp(&b.0.start)
                 .then_with(|| b.0.end.cmp(&a.0.end)) // Note: reversed for descending
         });
 
@@ -298,7 +302,9 @@ where
         }
 
         // Binary search to find the first interval whose start > t
-        let first_after = self.intervals.partition_point(|interval| interval.start <= t);
+        let first_after = self
+            .intervals
+            .partition_point(|interval| interval.start <= t);
 
         // Check all intervals that could contain t (those with start <= t)
         // We need to check from the beginning, but we can stop at first_after
@@ -314,10 +320,13 @@ where
             }
         }
 
-        results_set.into_iter()
-            .map(|v| v.into_iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect())
+        results_set
+            .into_iter()
+            .map(|v| {
+                v.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect()
+            })
             .collect()
     }
 
@@ -330,7 +339,9 @@ where
 
         // Binary search to find the first interval whose start >= range.end
         // These intervals cannot overlap with our range
-        let first_after = self.intervals.partition_point(|interval| interval.start < range.end);
+        let first_after = self
+            .intervals
+            .partition_point(|interval| interval.start < range.end);
 
         // Check all intervals that could overlap with the range
         for i in 0..first_after {
@@ -340,10 +351,13 @@ where
             }
         }
 
-        results_set.into_iter()
-            .map(|v| v.into_iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect())
+        results_set
+            .into_iter()
+            .map(|v| {
+                v.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect()
+            })
             .collect()
     }
 
@@ -381,7 +395,8 @@ where
         // Sort intervals by start (ascending), then by end (descending)
         let mut sorted_intervals = merged;
         sorted_intervals.sort_by(|a, b| {
-            a.0.start.cmp(&b.0.start)
+            a.0.start
+                .cmp(&b.0.start)
                 .then_with(|| b.0.end.cmp(&a.0.end))
         });
 
@@ -424,7 +439,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -432,11 +450,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = NCListCache::new(data).unwrap();
 
@@ -468,11 +482,7 @@ mod tests {
     fn test_nclist_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = NCListCache::new(data).unwrap();
 
@@ -483,4 +493,3 @@ mod tests {
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }
-

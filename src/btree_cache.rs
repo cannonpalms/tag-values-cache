@@ -59,9 +59,7 @@ where
     ///
     /// # Returns
     /// A new vector with merged intervals
-    fn merge_intervals(
-        mut intervals: Vec<(Range<Timestamp>, V)>,
-    ) -> Vec<(Range<Timestamp>, V)> {
+    fn merge_intervals(mut intervals: Vec<(Range<Timestamp>, V)>) -> Vec<(Range<Timestamp>, V)> {
         if intervals.is_empty() {
             return intervals;
         }
@@ -180,7 +178,8 @@ where
                 if start <= t && t < end {
                     // For now, we assume V implements a method to convert to Vec<(&str, &str)>
                     // This will fail compilation for non-TagSet types as requested
-                    let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                    let tag_vec: Vec<(&str, &str)> = value
+                        .into_iter()
                         .map(|(k, v)| (k.as_str(), v.as_str()))
                         .collect();
                     results.push(tag_vec);
@@ -211,7 +210,8 @@ where
                     if seen.insert(value) {
                         // For now, we assume V implements a method to convert to Vec<(&str, &str)>
                         // This will fail compilation for non-TagSet types as requested
-                        let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                        let tag_vec: Vec<(&str, &str)> = value
+                            .into_iter()
                             .map(|(k, v)| (k.as_str(), v.as_str()))
                             .collect();
                         results.push(tag_vec);
@@ -313,7 +313,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -321,11 +324,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = BTreeCache::new(data).unwrap();
 
@@ -357,11 +356,7 @@ mod tests {
     fn test_btree_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = BTreeCache::new(data).unwrap();
 

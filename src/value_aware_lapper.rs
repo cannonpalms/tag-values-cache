@@ -237,8 +237,16 @@ mod tests {
     #[test]
     fn test_value_aware_lapper_basic() {
         let intervals = vec![
-            Interval { start: 1u64, stop: 3u64, val: 1usize },
-            Interval { start: 5u64, stop: 7u64, val: 2usize },
+            Interval {
+                start: 1u64,
+                stop: 3u64,
+                val: 1usize,
+            },
+            Interval {
+                start: 5u64,
+                stop: 7u64,
+                val: 2usize,
+            },
         ];
 
         let lapper = ValueAwareLapper::new(intervals);
@@ -260,9 +268,21 @@ mod tests {
     #[test]
     fn test_value_aware_lapper_merge_with_values() {
         let intervals = vec![
-            Interval { start: 1u64, stop: 3u64, val: 1usize },
-            Interval { start: 3u64, stop: 5u64, val: 1usize }, // Same value, adjacent
-            Interval { start: 5u64, stop: 7u64, val: 2usize }, // Different value
+            Interval {
+                start: 1u64,
+                stop: 3u64,
+                val: 1usize,
+            },
+            Interval {
+                start: 3u64,
+                stop: 5u64,
+                val: 1usize,
+            }, // Same value, adjacent
+            Interval {
+                start: 5u64,
+                stop: 7u64,
+                val: 2usize,
+            }, // Different value
         ];
 
         let mut lapper = ValueAwareLapper::new(intervals);

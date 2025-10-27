@@ -3,7 +3,7 @@
 //! This shows how the new API works with direct string references from the dictionary.
 
 use std::collections::BTreeSet;
-use tag_values_cache::{SortedData, ValueAwareLapperCache, IntervalCache};
+use tag_values_cache::{IntervalCache, SortedData, ValueAwareLapperCache};
 
 fn main() {
     println!("Minimal Dictionary Encoding Demo");

@@ -96,9 +96,11 @@ impl BenchConfig {
         println!("Input path: {:?}", self.input_path);
         println!("Input type: {:?}", self.input_type);
         println!("Max rows: {}", self.max_rows);
-        println!("Max duration: {} ns (~{} days)",
+        println!(
+            "Max duration: {} ns (~{} days)",
             self.max_duration_ns,
-            self.max_duration_ns / (24 * 60 * 60 * 1_000_000_000));
+            self.max_duration_ns / (24 * 60 * 60 * 1_000_000_000)
+        );
         if let Some(card) = self.max_cardinality {
             println!("Max cardinality: {}", card);
         } else {
@@ -178,7 +180,9 @@ fn load_parquet_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let entry_path = entry.path();
-                if entry_path.is_file() && entry_path.extension().and_then(|s| s.to_str()) == Some("parquet") {
+                if entry_path.is_file()
+                    && entry_path.extension().and_then(|s| s.to_str()) == Some("parquet")
+                {
                     Some(entry_path)
                 } else {
                     None
@@ -249,7 +253,8 @@ fn load_parquet_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>
     let mut all_data = Vec::new();
     let mut overall_min_ts: Option<u64> = None;
     let mut overall_max_ts: Option<u64> = None;
-    let mut cardinality_tracker: Option<HashSet<String>> = config.max_cardinality.map(|_| HashSet::new());
+    let mut cardinality_tracker: Option<HashSet<String>> =
+        config.max_cardinality.map(|_| HashSet::new());
 
     for chunk in consecutive_files.chunks(CHUNK_SIZE) {
         // Load this chunk of files in parallel
@@ -286,28 +291,31 @@ fn load_parquet_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>
             // Apply cardinality filter if configured
             let filtered_data = if let Some(max_card) = config.max_cardinality {
                 let tracker = cardinality_tracker.as_mut().unwrap();
-                file_data.into_iter().filter(|(_, tag_set)| {
-                    if tracker.len() >= max_card {
-                        // Check if this tag combination is already seen
-                        let mut combination = Vec::new();
-                        for (key, value) in tag_set {
-                            combination.push(format!("{}={}", key, value));
+                file_data
+                    .into_iter()
+                    .filter(|(_, tag_set)| {
+                        if tracker.len() >= max_card {
+                            // Check if this tag combination is already seen
+                            let mut combination = Vec::new();
+                            for (key, value) in tag_set {
+                                combination.push(format!("{}={}", key, value));
+                            }
+                            combination.sort();
+                            let key = combination.join(",");
+                            tracker.contains(&key)
+                        } else {
+                            // Still under limit, track this combination
+                            let mut combination = Vec::new();
+                            for (key, value) in tag_set {
+                                combination.push(format!("{}={}", key, value));
+                            }
+                            combination.sort();
+                            let key = combination.join(",");
+                            tracker.insert(key);
+                            true
                         }
-                        combination.sort();
-                        let key = combination.join(",");
-                        tracker.contains(&key)
-                    } else {
-                        // Still under limit, track this combination
-                        let mut combination = Vec::new();
-                        for (key, value) in tag_set {
-                            combination.push(format!("{}={}", key, value));
-                        }
-                        combination.sort();
-                        let key = combination.join(",");
-                        tracker.insert(key);
-                        true
-                    }
-                }).collect()
+                    })
+                    .collect()
             } else {
                 file_data
             };
@@ -367,18 +375,12 @@ fn parse_line_protocol(line: &str) -> Option<(u64, TagSet)> {
     let mut tag_set = BTreeSet::new();
 
     // Add measurement as a special tag
-    tag_set.insert((
-        "_measurement".to_string(),
-        measurement.to_string(),
-    ));
+    tag_set.insert(("_measurement".to_string(), measurement.to_string()));
 
     // Parse tags - include all tags
     for tag_part in tag_parts {
         if let Some((key, value)) = tag_part.split_once('=') {
-            tag_set.insert((
-                key.to_string(),
-                value.to_string(),
-            ));
+            tag_set.insert((key.to_string(), value.to_string()));
         }
     }
 
@@ -400,7 +402,9 @@ fn load_line_protocol_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, Ta
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let entry_path = entry.path();
-                if entry_path.is_file() && entry_path.extension().and_then(|s| s.to_str()) == Some("lp") {
+                if entry_path.is_file()
+                    && entry_path.extension().and_then(|s| s.to_str()) == Some("lp")
+                {
                     Some(entry_path)
                 } else {
                     None
@@ -422,7 +426,8 @@ fn load_line_protocol_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, Ta
     }
 
     let mut all_data = Vec::new();
-    let mut cardinality_tracker: Option<HashSet<String>> = config.max_cardinality.map(|_| HashSet::new());
+    let mut cardinality_tracker: Option<HashSet<String>> =
+        config.max_cardinality.map(|_| HashSet::new());
     let mut overall_min_ts: Option<u64> = None;
     let mut overall_max_ts: Option<u64> = None;
 
@@ -433,9 +438,7 @@ fn load_line_protocol_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, Ta
         let reader = BufReader::new(file);
 
         // Read all lines first
-        let lines: Vec<String> = reader
-            .lines()
-            .collect::<Result<Vec<_>, _>>()?;
+        let lines: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
 
         // Parse lines in parallel
         let mut file_data: Vec<(u64, TagSet)> = lines
@@ -450,26 +453,29 @@ fn load_line_protocol_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, Ta
         // Apply cardinality filter if configured
         let filtered_data = if let Some(max_card) = config.max_cardinality {
             let tracker = cardinality_tracker.as_mut().unwrap();
-            file_data.into_iter().filter(|(_, tag_set)| {
-                if tracker.len() >= max_card {
-                    let mut combination = Vec::new();
-                    for (key, value) in tag_set {
-                        combination.push(format!("{}={}", key, value));
+            file_data
+                .into_iter()
+                .filter(|(_, tag_set)| {
+                    if tracker.len() >= max_card {
+                        let mut combination = Vec::new();
+                        for (key, value) in tag_set {
+                            combination.push(format!("{}={}", key, value));
+                        }
+                        combination.sort();
+                        let key = combination.join(",");
+                        tracker.contains(&key)
+                    } else {
+                        let mut combination = Vec::new();
+                        for (key, value) in tag_set {
+                            combination.push(format!("{}={}", key, value));
+                        }
+                        combination.sort();
+                        let key = combination.join(",");
+                        tracker.insert(key);
+                        true
                     }
-                    combination.sort();
-                    let key = combination.join(",");
-                    tracker.contains(&key)
-                } else {
-                    let mut combination = Vec::new();
-                    for (key, value) in tag_set {
-                        combination.push(format!("{}={}", key, value));
-                    }
-                    combination.sort();
-                    let key = combination.join(",");
-                    tracker.insert(key);
-                    true
-                }
-            }).collect()
+                })
+                .collect()
         } else {
             file_data
         };

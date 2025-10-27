@@ -167,7 +167,8 @@ where
         // Query all lappers and collect results
         for (value, lapper) in &self.lappers {
             if lapper.find(start, stop).next().is_some() {
-                let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                let tag_vec: Vec<(&str, &str)> = value
+                    .into_iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
                     .collect();
                 results.push(tag_vec);
@@ -186,7 +187,8 @@ where
         // Query all lappers and collect unique values
         for (value, lapper) in &self.lappers {
             if lapper.find(start, stop).next().is_some() {
-                let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                let tag_vec: Vec<(&str, &str)> = value
+                    .into_iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
                     .collect();
                 results.push(tag_vec);
@@ -258,7 +260,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -266,11 +271,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = LapperCache::new(data).unwrap();
 
@@ -302,11 +303,7 @@ mod tests {
     fn test_lapper_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = LapperCache::new(data).unwrap();
 
@@ -317,4 +314,3 @@ mod tests {
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }
-

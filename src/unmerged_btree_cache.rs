@@ -71,10 +71,7 @@ where
 
             // Add this interval to the map
             // Multiple intervals can have the same start time
-            intervals
-                .entry(t)
-                .or_insert_with(Vec::new)
-                .push((end, v));
+            intervals.entry(t).or_insert_with(Vec::new).push((end, v));
         }
 
         Ok(Self { intervals })
@@ -96,7 +93,8 @@ where
                 // Only include if the interval actually contains t
                 // Interval is [start, end) so we need start <= t < end
                 if start <= t && t < end {
-                    let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                    let tag_vec: Vec<(&str, &str)> = value
+                        .into_iter()
                         .map(|(k, v)| (k.as_str(), v.as_str()))
                         .collect();
                     results.push(tag_vec);
@@ -125,7 +123,8 @@ where
                 if end > range.start {
                     // Deduplicate based on the value
                     if seen.insert(value) {
-                        let tag_vec: Vec<(&str, &str)> = value.into_iter()
+                        let tag_vec: Vec<(&str, &str)> = value
+                            .into_iter()
                             .map(|(k, v)| (k.as_str(), v.as_str()))
                             .collect();
                         results.push(tag_vec);
@@ -150,10 +149,7 @@ where
                 .checked_add(1)
                 .ok_or(CacheBuildError::TimestampOverflow(t))?;
 
-            self.intervals
-                .entry(t)
-                .or_default()
-                .push((end, v));
+            self.intervals.entry(t).or_default().push((end, v));
         }
 
         Ok(())
@@ -202,7 +198,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -210,11 +209,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = UnmergedBTreeCache::new(data).unwrap();
 
@@ -246,11 +241,7 @@ mod tests {
     fn test_unmerged_btree_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = UnmergedBTreeCache::new(data).unwrap();
 
@@ -261,4 +252,3 @@ mod tests {
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }
-

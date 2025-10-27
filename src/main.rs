@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
 use tag_values_cache::{
-    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, TagSet,
-    SortedData, UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_tags_from_batch,
+    BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, SortedData, TagSet,
+    UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_tags_from_batch,
 };
 
 fn print_usage() {
@@ -197,7 +197,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Only keep WithHash, CounterID, CookieEnable, and URLHash
             for (key, value) in &tag_set {
-                if key == "WithHash" || key == "CounterID" || key == "CookieEnable" || key == "URLHash" {
+                if key == "WithHash"
+                    || key == "CounterID"
+                    || key == "CookieEnable"
+                    || key == "URLHash"
+                {
                     filtered_set.insert((key.clone(), value.clone()));
                 }
             }

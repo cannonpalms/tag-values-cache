@@ -4,7 +4,7 @@
 //! Multiple identical TagSets will share the same dictionary ID.
 
 use std::collections::BTreeSet;
-use tag_values_cache::{SortedData, ValueAwareLapperCache, IntervalCache};
+use tag_values_cache::{IntervalCache, SortedData, ValueAwareLapperCache};
 
 fn main() {
     println!("Dictionary Encoding Demo for ValueAwareLapperCache");
@@ -63,9 +63,15 @@ fn main() {
 
     println!("Dictionary Encoding Statistics (Before Queries):");
     println!("------------------------------------------------");
-    println!("Unique TagSet entries in dictionary: {}", stats.unique_entries);
+    println!(
+        "Unique TagSet entries in dictionary: {}",
+        stats.unique_entries
+    );
     println!("Dictionary size: {} bytes", stats.dictionary_size_bytes);
-    println!("Decoded cache size: {} bytes (lazily populated)", stats.cache_size_bytes);
+    println!(
+        "Decoded cache size: {} bytes (lazily populated)",
+        stats.cache_size_bytes
+    );
     println!("Total intervals in cache: {}", cache.interval_count());
     println!("Total cache size: {} bytes\n", cache.size_bytes());
 
@@ -75,21 +81,30 @@ fn main() {
 
     // Query for server1 data
     let result = cache.query_point(100);
-    println!("Query at timestamp 100 (server1): {} unique TagSets found", result.len());
+    println!(
+        "Query at timestamp 100 (server1): {} unique TagSets found",
+        result.len()
+    );
     for tagset in result.iter().take(1) {
         println!("  TagSet: {:?}", tagset);
     }
 
     // Query for server2 data
     let result = cache.query_point(1500);
-    println!("Query at timestamp 1500 (server2): {} unique TagSets found", result.len());
+    println!(
+        "Query at timestamp 1500 (server2): {} unique TagSets found",
+        result.len()
+    );
     for tagset in result.iter().take(1) {
         println!("  TagSet: {:?}", tagset);
     }
 
     // Query for server3 data
     let result = cache.query_point(2100);
-    println!("Query at timestamp 2100 (server3): {} unique TagSets found", result.len());
+    println!(
+        "Query at timestamp 2100 (server3): {} unique TagSets found",
+        result.len()
+    );
     for tagset in result.iter().take(1) {
         println!("  TagSet: {:?}", tagset);
     }
@@ -97,13 +112,17 @@ fn main() {
     // Get statistics after queries (decoded cache is now populated)
     let final_stats = cache.dictionary_stats();
 
-    println!("\n✅ Dictionary encoding is working! Only {} unique entries stored for {} data points",
-             final_stats.unique_entries, 350);
+    println!(
+        "\n✅ Dictionary encoding is working! Only {} unique entries stored for {} data points",
+        final_stats.unique_entries, 350
+    );
 
     println!("\nDictionary Statistics After Queries:");
     println!("------------------------------------");
-    println!("Decoded cache size: {} bytes (now populated with {} entries)",
-             final_stats.cache_size_bytes, final_stats.unique_entries);
+    println!(
+        "Decoded cache size: {} bytes (now populated with {} entries)",
+        final_stats.cache_size_bytes, final_stats.unique_entries
+    );
 
     // Calculate memory savings
     let raw_tagset_size = 350 * std::mem::size_of::<BTreeSet<(String, String)>>();
@@ -114,5 +133,8 @@ fn main() {
         0.0
     };
 
-    println!("Estimated memory savings: {:.1}% (excluding string content)", savings);
+    println!(
+        "Estimated memory savings: {:.1}% (excluding string content)",
+        savings
+    );
 }

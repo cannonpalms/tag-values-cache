@@ -217,9 +217,12 @@ where
 
     /// Query for all values at a specific timestamp.
     fn query_point_impl(&self, t: u64) -> Vec<Vec<(&str, &str)>> {
-        self.tree.query_point(t)
+        self.tree
+            .query_point(t)
             .map(|entry| {
-                entry.value.into_iter()
+                entry
+                    .value
+                    .into_iter()
                     .map(|(k, v)| (k.as_str(), v.as_str()))
                     .collect()
             })
@@ -229,12 +232,17 @@ where
     /// Query for all values within a range.
     fn query_range_impl(&self, range: Range<u64>) -> Vec<Vec<(&str, &str)>> {
         let mut seen = HashSet::new();
-        self.tree.query(range)
+        self.tree
+            .query(range)
             .filter_map(|entry| {
                 if seen.insert(&entry.value) {
-                    Some(entry.value.into_iter()
-                        .map(|(k, v)| (k.as_str(), v.as_str()))
-                        .collect())
+                    Some(
+                        entry
+                            .value
+                            .into_iter()
+                            .map(|(k, v)| (k.as_str(), v.as_str()))
+                            .collect(),
+                    )
                 } else {
                     None
                 }
@@ -249,7 +257,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -257,11 +268,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = IntervalTreeCache::new(data).unwrap();
 
@@ -293,11 +300,7 @@ mod tests {
     fn test_interval_tree_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = IntervalTreeCache::new(data).unwrap();
 
@@ -308,4 +311,3 @@ mod tests {
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }
-

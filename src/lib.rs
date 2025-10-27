@@ -452,9 +452,7 @@ where
     {
         UnmergedBTreeCache::new(self.data)
     }
-
 }
-
 
 /// Represents a single value from an Arrow column
 #[derive(Clone, Debug, PartialEq)]

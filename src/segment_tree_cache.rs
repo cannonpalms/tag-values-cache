@@ -78,9 +78,7 @@ where
     ///
     /// Takes a list of intervals and merges any that are adjacent (touching) or overlapping
     /// and have the same value. Also removes any duplicate intervals.
-    fn merge_intervals(
-        mut intervals: Vec<(Range<Timestamp>, V)>,
-    ) -> Vec<(Range<Timestamp>, V)> {
+    fn merge_intervals(mut intervals: Vec<(Range<Timestamp>, V)>) -> Vec<(Range<Timestamp>, V)> {
         if intervals.is_empty() {
             return intervals;
         }
@@ -224,22 +222,12 @@ where
         let mid_idx = (left_idx + right_idx) / 2;
 
         // Build left child
-        let left_child_idx = Self::build_tree_recursive(
-            timestamps,
-            left_idx,
-            mid_idx,
-            intervals,
-            nodes,
-        );
+        let left_child_idx =
+            Self::build_tree_recursive(timestamps, left_idx, mid_idx, intervals, nodes);
 
         // Build right child
-        let right_child_idx = Self::build_tree_recursive(
-            timestamps,
-            mid_idx,
-            right_idx,
-            intervals,
-            nodes,
-        );
+        let right_child_idx =
+            Self::build_tree_recursive(timestamps, mid_idx, right_idx, intervals, nodes);
 
         // Collect intervals that overlap with this node's range
         // We store ALL overlapping intervals at internal nodes too, not just those that fully span
@@ -262,7 +250,12 @@ where
     ///
     /// Traverses the tree from root to leaf, collecting all intervals
     /// that contain the query point.
-    fn query_point_recursive<'a>(&'a self, node_idx: usize, t: Timestamp, results: &mut HashSet<&'a V>) {
+    fn query_point_recursive<'a>(
+        &'a self,
+        node_idx: usize,
+        t: Timestamp,
+        results: &mut HashSet<&'a V>,
+    ) {
         if node_idx >= self.nodes.len() {
             return;
         }
@@ -327,7 +320,6 @@ where
             self.query_range_recursive(right_idx, range, results);
         }
     }
-
 }
 
 impl<V> IntervalCache<V> for SegmentTreeCache<V>
@@ -397,10 +389,13 @@ where
         // Start from root (index 0)
         self.query_point_recursive(0, t, &mut results_set);
 
-        results_set.into_iter()
-            .map(|v| v.into_iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect())
+        results_set
+            .into_iter()
+            .map(|v| {
+                v.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect()
+            })
             .collect()
     }
 
@@ -414,10 +409,13 @@ where
         // Start from root (index 0)
         self.query_range_recursive(0, range, &mut results_set);
 
-        results_set.into_iter()
-            .map(|v| v.into_iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect())
+        results_set
+            .into_iter()
+            .map(|v| {
+                v.into_iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect()
+            })
             .collect()
     }
 
@@ -506,7 +504,10 @@ mod tests {
     use crate::TagSet;
 
     fn make_tagset(pairs: &[(&str, &str)]) -> TagSet {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -514,11 +515,7 @@ mod tests {
         let tag_a = make_tagset(&[("host", "server1")]);
         let tag_b = make_tagset(&[("host", "server2")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (4, tag_b.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (4, tag_b.clone())];
 
         let cache = SegmentTreeCache::new(data).unwrap();
 
@@ -550,11 +547,7 @@ mod tests {
     fn test_segment_tree_cache_merge() {
         let tag_a = make_tagset(&[("host", "server1")]);
 
-        let data = vec![
-            (1, tag_a.clone()),
-            (2, tag_a.clone()),
-            (3, tag_a.clone()),
-        ];
+        let data = vec![(1, tag_a.clone()), (2, tag_a.clone()), (3, tag_a.clone())];
 
         let cache = SegmentTreeCache::new(data).unwrap();
 
@@ -565,4 +558,3 @@ mod tests {
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }
-
