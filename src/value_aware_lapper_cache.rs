@@ -271,7 +271,7 @@ impl ValueAwareLapperCache {
     /// Helper to encode a chunk of data with a local dictionary.
     /// Returns (encoded_points, local_string_dict, local_tagsets, local_tagset_map)
     fn encode_chunk(
-        chunk: Vec<(Timestamp, TagSet)>,
+        chunk: &[(Timestamp, TagSet)],
     ) -> (
         Vec<(Timestamp, usize)>,
         StringDictionary<usize>,
@@ -284,7 +284,7 @@ impl ValueAwareLapperCache {
             std::collections::HashMap::new();
 
         let encoded_points: Vec<(Timestamp, usize)> = chunk
-            .into_iter()
+            .iter()
             .map(|(ts, tagset)| {
                 // Encode the TagSet
                 let encoded: EncodedTagSet = tagset
@@ -303,7 +303,7 @@ impl ValueAwareLapperCache {
                     id
                 });
 
-                (ts, encoded_id)
+                (*ts, encoded_id)
             })
             .collect();
 
@@ -399,10 +399,7 @@ impl ValueAwareLapperCache {
         // Process chunks in parallel, each building local dictionaries
         let local_results: Vec<_> = points
             .par_chunks(chunk_size)
-            .map(|chunk| {
-                let chunk_vec = chunk.to_vec();
-                Self::encode_chunk(chunk_vec)
-            })
+            .map(|chunk| Self::encode_chunk(chunk))
             .collect();
 
         // Separate the results
@@ -541,10 +538,7 @@ impl ValueAwareLapperCache {
         // Process chunks in parallel, each building local dictionaries
         let local_results: Vec<_> = points
             .par_chunks(chunk_size)
-            .map(|chunk| {
-                let chunk_vec = chunk.to_vec();
-                Self::encode_chunk(chunk_vec)
-            })
+            .map(|chunk| Self::encode_chunk(chunk))
             .collect();
 
         // Separate the results
