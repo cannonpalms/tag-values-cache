@@ -14,9 +14,9 @@ mod data_loader;
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use futures::stream::{self, StreamExt};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use std::fs::File;
+use datafusion::config::ConfigOptions;
+use datafusion::prelude::*;
+use futures::stream::StreamExt;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::streaming::{
@@ -44,127 +44,217 @@ fn get_record_batches() -> Option<&'static Vec<RecordBatch>> {
     }
 }
 
-/// Create a SendableRecordBatchStream that reads directly from parquet files on disk
-/// This demonstrates true streaming - data is read incrementally without loading everything into memory
+/// Converts a DataFusion stream to our Arrow stream type
+fn adapt_datafusion_stream(
+    df_stream: datafusion::physical_plan::SendableRecordBatchStream,
+) -> SendableRecordBatchStream {
+    // Map each DataFusion RecordBatch to our Arrow RecordBatch
+    df_stream
+        .map(|result| {
+            match result {
+                Ok(df_batch) => {
+                    // DataFusion's batch uses a newer arrow version, but the structure is the same.
+                    // We need to reconstruct the batch with our arrow version.
+
+                    // Get the raw bytes representation from DataFusion's batch
+                    // and reconstruct using our arrow version
+                    use arrow::ipc::reader::StreamReader;
+                    use std::io::Cursor;
+
+                    // Serialize the DataFusion batch to IPC format
+                    let mut buffer = Vec::new();
+                    {
+                        let df_schema = df_batch.schema();
+                        let mut writer = datafusion::arrow::ipc::writer::StreamWriter::try_new(
+                            &mut buffer,
+                            &df_schema,
+                        )
+                        .map_err(|e| ArrowError::from_external_error(Box::new(e)))?;
+                        writer
+                            .write(&df_batch)
+                            .map_err(|e| ArrowError::from_external_error(Box::new(e)))?;
+                        writer
+                            .finish()
+                            .map_err(|e| ArrowError::from_external_error(Box::new(e)))?;
+                    }
+
+                    // Deserialize using our arrow version
+                    let cursor = Cursor::new(buffer);
+                    let reader = StreamReader::try_new(cursor, None)
+                        .map_err(|e| ArrowError::from_external_error(Box::new(e)))?;
+
+                    // Get the first (and only) batch
+                    let batches: Vec<_> = reader
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| ArrowError::from_external_error(Box::new(e)))?;
+
+                    if let Some(batch) = batches.into_iter().next() {
+                        Ok(batch)
+                    } else {
+                        Err(ArrowError::from_external_error(Box::new(
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Failed to convert batch",
+                            ),
+                        )))
+                    }
+                }
+                Err(e) => Err(ArrowError::from_external_error(Box::new(e))),
+            }
+        })
+        .boxed()
+}
+
+/// Create IOx-style DataFusion SessionConfig with proper parquet optimizations
+fn create_iox_session_config() -> SessionConfig {
+    // Create config with IOx-style optimizations
+    let mut options = ConfigOptions::new();
+
+    // Enable parquet predicate pushdown optimization (IOx pattern)
+    options.execution.parquet.pushdown_filters = true;
+    options.execution.parquet.reorder_filters = true;
+
+    // Enable optimizer settings used by IOx
+    options.optimizer.repartition_sorts = true;
+    options.optimizer.prefer_existing_union = true;
+
+    // Use row number estimates for optimization (IOx pattern)
+    options
+        .execution
+        .use_row_number_estimates_to_optimize_partitioning = true;
+
+    let mut config = SessionConfig::from(options);
+
+    // Set batch size to 8KB like IOx (8 * 1024 bytes)
+    config = config.with_batch_size(8 * 1024);
+
+    // Don't coalesce batches to preserve streaming behavior
+    config = config.with_coalesce_batches(false);
+
+    config
+}
+
+/// Create a SendableRecordBatchStream that reads directly from parquet files on disk using DataFusion
+/// This uses DataFusion's query engine with IOx-style configuration for optimal parquet handling
 async fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io::Error> {
     let config = data_loader::BenchConfig::from_env();
     let path = &config.input_path;
     let max_rows = config.max_rows;
 
-    // Get list of parquet files
-    let parquet_files: Vec<std::path::PathBuf> = if path.is_file() {
-        vec![path.clone()]
-    } else if path.is_dir() {
-        std::fs::read_dir(path)?
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let entry_path = entry.path();
-                if entry_path.is_file()
-                    && entry_path.extension().and_then(|s| s.to_str()) == Some("parquet")
-                {
-                    Some(entry_path)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    } else {
+    // Validate that the input path exists
+    if !path.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("Path not found: {:?}", path),
         ));
-    };
-
-    if parquet_files.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "No parquet files found",
-        ));
     }
 
-    // Sort files for consistent ordering
-    let mut parquet_files = parquet_files;
-    parquet_files.sort();
+    // Create DataFusion context with IOx-style configuration
+    let session_config = create_iox_session_config();
+    let ctx = SessionContext::new_with_config(session_config);
 
-    // Create a stream that yields batches one by one without collecting
-    // This uses unfold to maintain state across iterations
-    let rows_read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let rows_read_clone = rows_read.clone();
-
-    let stream = stream::unfold(
-        (parquet_files.into_iter(), None, rows_read_clone, max_rows),
-        move |(mut files, mut current_reader, rows_counter, limit)| async move {
-            loop {
-                // Check if we've reached the row limit
-                if rows_counter.load(std::sync::atomic::Ordering::Relaxed) >= limit {
-                    return None;
-                }
-
-                // Get or create the current reader
-                let reader = match current_reader.take() {
-                    Some(r) => r,
-                    None => {
-                        // Try to open the next file
-                        let file_path = files.next()?;
-                        let file = File::open(&file_path)
-                            .map_err(|e| {
-                                ArrowError::IoError(
-                                    format!("Failed to open {:?}: {}", file_path, e),
-                                    e,
-                                )
-                            })
-                            .ok()?;
-                        let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
-                        builder.build().ok()?
-                    }
-                };
-
-                // Try to read the next batch
-                let mut reader_iter = reader.into_iter();
-                if let Some(batch_result) = reader_iter.next() {
-                    match batch_result {
-                        Ok(batch) => {
-                            let batch_rows = batch.num_rows();
-                            let current_total = rows_counter
-                                .fetch_add(batch_rows, std::sync::atomic::Ordering::Relaxed);
-
-                            // Check if this batch would exceed the limit
-                            if current_total + batch_rows > limit {
-                                // Slice the batch to fit exactly within the limit
-                                let remaining = limit - current_total;
-                                if remaining > 0 {
-                                    let sliced_batch = batch.slice(0, remaining);
-                                    return Some((
-                                        Ok(sliced_batch),
-                                        (files, None, rows_counter, limit),
-                                    ));
-                                } else {
-                                    return None;
-                                }
-                            }
-
-                            // Return the batch and continue with this reader
-                            return Some((
-                                Ok(batch),
-                                (files, Some(reader_iter), rows_counter, limit),
-                            ));
-                        }
-                        Err(e) => {
-                            // Return error and try next file
-                            return Some((Err(e), (files, None, rows_counter, limit)));
-                        }
-                    }
+    // Register parquet files
+    // Note: We're using a single file to avoid dictionary merge issues
+    // IOx handles this by reading files in groups with consistent schemas
+    let parquet_file = if path.is_dir() {
+        // Find the first parquet file
+        std::fs::read_dir(path)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.is_file() && path.extension()?.to_str()? == "parquet" {
+                    Some(path)
                 } else {
-                    // Current file exhausted, try next file
-                    current_reader = None;
-                    continue;
+                    None
+                }
+            })
+            .next()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No parquet files found in directory",
+                )
+            })?
+    } else {
+        path.clone()
+    };
+
+    // Configure ParquetReadOptions with IOx-style settings
+    let parquet_options = ParquetReadOptions::default().parquet_pruning(true); // Enable file pruning based on predicates
+
+    // Register the parquet file
+    ctx.register_parquet("data", parquet_file.to_str().unwrap(), parquet_options)
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    // First, get the schema to understand the columns
+    let test_df = ctx
+        .sql("SELECT * FROM data LIMIT 1")
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    let schema = test_df.schema();
+
+    // Find the time column using IOx conventions
+    // IOx marks time columns with metadata "iox::column_type::timestamp"
+    let time_column = schema
+        .fields()
+        .iter()
+        .find(|f| {
+            // Check metadata first (IOx pattern)
+            if let Some(column_type) = f.metadata().get("iox::column::type") {
+                if column_type == "iox::column_type::timestamp" {
+                    return true;
                 }
             }
-        },
-    )
-    .boxed();
+            // Fallback to name-based detection
+            let name_lower = f.name().to_lowercase();
+            name_lower == "time"
+                || name_lower == "timestamp"
+                || name_lower == "_time"
+                || name_lower == "eventtime"
+        })
+        .map(|f| f.name().clone())
+        .unwrap_or_else(|| "time".to_string());
 
-    Ok(stream)
+    // Build a query that casts dictionary columns to regular strings
+    // This avoids schema merge issues with different dictionary IDs
+    let column_selections: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            match field.data_type() {
+                datafusion::arrow::datatypes::DataType::Dictionary(_, _) => {
+                    // Cast dictionary columns to regular strings
+                    format!("CAST({} AS VARCHAR) AS {}", field.name(), field.name())
+                }
+                _ => field.name().clone(),
+            }
+        })
+        .collect();
+
+    let columns_str = column_selections.join(", ");
+
+    // Build the query with ORDER BY and LIMIT
+    let query = format!(
+        "SELECT {} FROM data ORDER BY {} ASC LIMIT {}",
+        columns_str, time_column, max_rows
+    );
+
+    // Execute the query
+    let df = ctx
+        .sql(&query)
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    // Get the stream of record batches from DataFusion
+    let df_stream = df
+        .execute_stream()
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+    // Convert DataFusion's stream to our Arrow stream type
+    Ok(adapt_datafusion_stream(df_stream))
 }
 
 /// Benchmark comparing Chunked vs Sorted streaming builders
