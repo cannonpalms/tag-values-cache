@@ -35,6 +35,7 @@ pub mod interval_tree;
 pub mod lapper_cache;
 pub mod nclist_cache;
 pub mod segment_tree_cache;
+pub mod streaming;
 pub mod unmerged_btree_cache;
 pub mod value_aware_lapper;
 pub mod value_aware_lapper_cache;
@@ -61,6 +62,32 @@ pub type Timestamp = u64;
 /// - Value-based equality (two TagSets with same elements are equal)
 /// - Efficient comparison and merging operations
 pub type TagSet = BTreeSet<(String, String)>;
+
+/// Represents a dictionary-encoded TagSet as a list of (key_id, value_id) pairs.
+///
+/// This is used internally by caches to store TagSets more efficiently.
+/// Using Box<[T]> instead of Vec<T> avoids excess capacity overhead.
+pub(crate) type EncodedTagSet = Box<[(usize, usize)]>;
+
+/// Encodes a TagSet into a dictionary-encoded representation.
+///
+/// This function takes all strings (keys and values) from the TagSet and looks them up
+/// (or inserts them) in the provided string dictionary, returning a vector of ID pairs.
+///
+/// This is an internal function used by streaming builders.
+pub(crate) fn encode_tagset(
+    tagset: &TagSet,
+    string_dict: &mut arrow_util::dictionary::StringDictionary<usize>,
+) -> EncodedTagSet {
+    tagset
+        .iter()
+        .map(|(k, val)| {
+            let key_id = string_dict.lookup_value_or_insert(k);
+            let value_id = string_dict.lookup_value_or_insert(val);
+            (key_id, value_id)
+        })
+        .collect()
+}
 
 /// Trait for types that can estimate their heap-allocated memory size.
 ///
@@ -206,6 +233,14 @@ pub enum CacheBuildError {
         cache_resolution: std::time::Duration,
         append_resolution: std::time::Duration,
     },
+
+    /// Occurs when trying to finalize a builder with no data
+    #[error("no data was processed - cache is empty")]
+    NoData,
+
+    /// Occurs when an Arrow operation fails during streaming
+    #[error("arrow error: {0}")]
+    ArrowError(String),
 }
 
 /// Wrapper type that guarantees data is sorted by timestamp then value.

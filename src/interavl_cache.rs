@@ -344,8 +344,8 @@ mod tests {
 
         // Should have merged into 1 interval: [1,4)
         assert_eq!(cache.interval_count(), 1);
-        assert!(cache.query_point(1).len() > 0);
-        assert!(cache.query_point(3).len() > 0);
+        assert!(!cache.query_point(1).is_empty());
+        assert!(!cache.query_point(3).is_empty());
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }

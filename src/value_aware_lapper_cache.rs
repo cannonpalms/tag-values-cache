@@ -30,7 +30,7 @@ pub struct DictionaryStats {
 }
 
 /// Represents a dictionary-encoded TagSet as a list of (key_id, value_id) pairs
-type EncodedTagSet = Vec<(usize, usize)>;
+type EncodedTagSet = Box<[(usize, usize)]>;
 
 /// An interval cache implementation using ValueAwareLapper with dictionary encoding.
 ///
@@ -65,6 +65,31 @@ impl ValueAwareLapperCache {
     /// Get the number of unique TagSets stored
     pub fn unique_tagsets(&self) -> usize {
         self.tagsets.len()
+    }
+
+    /// Construct a cache from pre-built components.
+    ///
+    /// This is an internal constructor used by streaming builders that have already
+    /// constructed the individual parts of the cache.
+    ///
+    /// # Arguments
+    ///
+    /// * `value_lapper` - The ValueAwareLapper containing intervals
+    /// * `string_dict` - The string dictionary
+    /// * `tagsets` - The set of encoded TagSets
+    /// * `resolution` - The time resolution
+    pub(crate) fn from_parts(
+        value_lapper: ValueAwareLapper<u64, usize>,
+        string_dict: StringDictionary<usize>,
+        tagsets: IndexSet<EncodedTagSet>,
+        resolution: Duration,
+    ) -> Self {
+        Self {
+            value_lapper,
+            string_dict,
+            tagsets,
+            resolution,
+        }
     }
 
     /// Query and return dictionary IDs for a point
@@ -140,7 +165,7 @@ impl ValueAwareLapperCache {
     /// For nanosecond resolution (Duration::from_nanos(1) or less), returns the timestamp unchanged.
     /// Otherwise, buckets the timestamp to the nearest multiple of the resolution.
     #[inline]
-    fn bucket_timestamp(ts: Timestamp, resolution: Duration) -> Timestamp {
+    pub(crate) fn bucket_timestamp(ts: Timestamp, resolution: Duration) -> Timestamp {
         let resolution_ns = resolution.as_nanos() as u64;
         if resolution_ns <= 1 {
             ts
@@ -368,7 +393,7 @@ impl ValueAwareLapperCache {
         // Process chunks in parallel, each building local dictionaries
         let local_results: Vec<_> = points
             .par_chunks(chunk_size)
-            .map(|chunk| Self::encode_chunk(chunk))
+            .map(Self::encode_chunk)
             .collect();
 
         // Separate the results
@@ -504,7 +529,7 @@ impl ValueAwareLapperCache {
         // Process chunks in parallel, each building local dictionaries
         let local_results: Vec<_> = points
             .par_chunks(chunk_size)
-            .map(|chunk| Self::encode_chunk(chunk))
+            .map(Self::encode_chunk)
             .collect();
 
         // Separate the results
@@ -624,7 +649,8 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
         // IndexSet overhead (approximate)
         size += self.tagsets.len() * std::mem::size_of::<EncodedTagSet>();
         for tagset in &self.tagsets {
-            size += tagset.capacity() * std::mem::size_of::<(usize, usize)>();
+            // Box<[T]> has no excess capacity, just the actual elements
+            size += tagset.len() * std::mem::size_of::<(usize, usize)>();
         }
 
         size
@@ -632,6 +658,52 @@ impl IntervalCache<TagSet> for ValueAwareLapperCache {
 
     fn interval_count(&self) -> usize {
         self.value_lapper.len()
+    }
+}
+
+// Test-only methods to access internal structures for equivalence testing
+#[cfg(test)]
+impl ValueAwareLapperCache {
+    /// Get all intervals in sorted order for testing
+    pub(crate) fn get_intervals_sorted(&self) -> Vec<(u64, u64, usize)> {
+        let mut intervals: Vec<_> = self
+            .value_lapper
+            .iter()
+            .map(|iv| (iv.start, iv.stop, iv.val))
+            .collect();
+        intervals.sort();
+        intervals
+    }
+
+    /// Get all unique strings from the dictionary in sorted order
+    pub(crate) fn get_dictionary_strings_sorted(&self) -> Vec<String> {
+        let mut strings: Vec<String> = Vec::new();
+        let values = self.string_dict.values();
+        for i in 0..values.len() {
+            if let Some(s) = self.string_dict.lookup_id(i) {
+                strings.push(s.to_string());
+            }
+        }
+        strings.sort();
+        strings
+    }
+
+    /// Get all encoded tagsets in sorted order (by their ID)
+    pub(crate) fn get_tagsets_sorted(&self) -> Vec<Box<[(usize, usize)]>> {
+        self.tagsets
+            .iter()
+            .map(|tagset| {
+                // Convert to Vec to sort, then back to boxed slice
+                let mut sorted: Vec<_> = tagset.to_vec();
+                sorted.sort();
+                sorted.into_boxed_slice()
+            })
+            .collect()
+    }
+
+    /// Get the resolution
+    pub(crate) fn get_resolution(&self) -> Duration {
+        self.resolution
     }
 }
 
@@ -690,8 +762,8 @@ mod tests {
 
         // Should have merged into 1 interval: [1,4)
         assert_eq!(cache.interval_count(), 1);
-        assert!(cache.query_point(1).len() > 0);
-        assert!(cache.query_point(3).len() > 0);
+        assert!(!cache.query_point(1).is_empty());
+        assert!(!cache.query_point(3).is_empty());
         assert_eq!(cache.query_point(4).len(), 0);
     }
 
@@ -728,9 +800,9 @@ mod tests {
                 .unwrap();
 
         // Should still work correctly
-        assert!(cache.query_point(1).len() > 0);
-        assert!(cache.query_point(2).len() > 0);
-        assert!(cache.query_point(3).len() > 0);
+        assert!(!cache.query_point(1).is_empty());
+        assert!(!cache.query_point(2).is_empty());
+        assert!(!cache.query_point(3).is_empty());
     }
 
     #[test]
@@ -791,9 +863,9 @@ mod tests {
         assert_eq!(cache.interval_count(), 2);
 
         // Verify data is accessible
-        assert!(cache.query_point(1).len() > 0);
-        assert!(cache.query_point(3).len() > 0);
-        assert!(cache.query_point(5).len() > 0);
+        assert!(!cache.query_point(1).is_empty());
+        assert!(!cache.query_point(3).is_empty());
+        assert!(!cache.query_point(5).is_empty());
     }
 
     #[test]
@@ -887,9 +959,9 @@ mod tests {
         assert_eq!(cache.interval_count(), 2);
 
         // Verify data is accessible
-        assert!(cache.query_point(1).len() > 0);
-        assert!(cache.query_point(3).len() > 0);
-        assert!(cache.query_point(5).len() > 0);
+        assert!(!cache.query_point(1).is_empty());
+        assert!(!cache.query_point(3).is_empty());
+        assert!(!cache.query_point(5).is_empty());
     }
 
     #[test]

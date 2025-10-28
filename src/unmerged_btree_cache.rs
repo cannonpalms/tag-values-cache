@@ -247,8 +247,8 @@ mod tests {
 
         // UnmergedBTreeCache does NOT merge, so should have 3 separate intervals
         assert_eq!(cache.interval_count(), 3);
-        assert!(cache.query_point(1).len() > 0);
-        assert!(cache.query_point(3).len() > 0);
+        assert!(!cache.query_point(1).is_empty());
+        assert!(!cache.query_point(3).is_empty());
         assert_eq!(cache.query_point(4).len(), 0);
     }
 }

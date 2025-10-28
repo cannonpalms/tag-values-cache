@@ -18,11 +18,20 @@ rayon = "1.10"
 rust-lapper = "1.2.0"
 thiserror = "2.0.17"
 arrow_util = { path = "../influxdb_iox/arrow_util" }
+futures = { version = "0.3" }
+tokio = { version = "1.42", features = ["macros", "rt"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 chrono = "0.4"
+rand = "0.9.2"
+parquet = "55.2"
+arrow = "55.2"
 
 [[bench]]
 name = "value_lapper_cache"
+harness = false
+
+[[bench]]
+name = "streaming_build"
 harness = false

@@ -162,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Process batches in parallel using rayon
             let file_data: Vec<(u64, TagSet)> = batches
                 .par_iter()
-                .flat_map(|batch| extract_tags_from_batch(batch))
+                .flat_map(extract_tags_from_batch)
                 .collect();
 
             println!("  Extracted {} rows from {}", file_data.len(), file_path);

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashSet};
@@ -42,12 +44,12 @@ impl BenchConfig {
         let max_rows = std::env::var("BENCH_MAX_ROWS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(10_000_000);
+            .unwrap_or(100_000); // Reduced from 10M to 100K for faster benchmarks
 
         let max_duration_ns = std::env::var("BENCH_MAX_DURATION_NS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(7 * 24 * 60 * 60 * 1_000_000_000); // 7 days
+            .unwrap_or(60 * 60 * 1_000_000_000); // Reduced from 7 days to 1 hour
 
         let max_cardinality = std::env::var("BENCH_MAX_CARDINALITY")
             .ok()
@@ -132,19 +134,16 @@ fn get_timestamp_range(
     for row_group in metadata.row_groups() {
         for column in row_group.columns() {
             let col_name = column.column_descr().name().to_lowercase();
-            if col_name == "time"
+            if (col_name == "time"
                 || col_name == "timestamp"
                 || col_name == "_time"
-                || col_name == "eventtime"
+                || col_name == "eventtime")
+                && let Some(stats) = column.statistics()
+                && let Statistics::Int64(int_stats) = stats
+                && let (Some(min), Some(max)) = (int_stats.min_opt(), int_stats.max_opt())
             {
-                if let Some(stats) = column.statistics() {
-                    if let Statistics::Int64(int_stats) = stats {
-                        if let (Some(min), Some(max)) = (int_stats.min_opt(), int_stats.max_opt()) {
-                            overall_min = Some(overall_min.map_or(*min, |m| m.min(*min)));
-                            overall_max = Some(overall_max.map_or(*max, |m| m.max(*max)));
-                        }
-                    }
-                }
+                overall_min = Some(overall_min.map_or(*min, |m| m.min(*min)));
+                overall_max = Some(overall_max.map_or(*max, |m| m.max(*max)));
             }
         }
     }
@@ -269,7 +268,7 @@ fn load_parquet_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>
 
                 let file_data: Vec<(u64, TagSet)> = batches
                     .par_iter()
-                    .flat_map(|batch| extract_tags_from_batch(batch))
+                    .flat_map(extract_tags_from_batch)
                     .collect();
 
                 let file_rows = file_data.len();
@@ -557,4 +556,191 @@ pub fn load_data() -> std::io::Result<Vec<(u64, TagSet)>> {
     println!("======================\n");
 
     Ok(data)
+}
+
+/// Load Parquet data as RecordBatches for streaming benchmarks
+#[allow(dead_code)]
+pub fn load_record_batches() -> Result<Vec<arrow::array::RecordBatch>, std::io::Error> {
+    let config = BenchConfig::from_env();
+
+    if config.input_type != InputType::Parquet {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Record batch loading only supports Parquet input",
+        ));
+    }
+
+    let path = &config.input_path;
+
+    // Find all parquet files
+    let parquet_files: Vec<std::path::PathBuf> = if path.is_file() {
+        vec![path.clone()]
+    } else if path.is_dir() {
+        std::fs::read_dir(path)?
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let entry_path = entry.path();
+                if entry_path.is_file()
+                    && entry_path.extension().and_then(|s| s.to_str()) == Some("parquet")
+                {
+                    Some(entry_path)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Path not found: {:?}", path),
+        ));
+    };
+
+    if parquet_files.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("No parquet files found in {:?}", path),
+        ));
+    }
+
+    // Phase 1: Scan metadata from all files in parallel
+    let mut file_metadata: Vec<FileMetadata> = parquet_files
+        .par_iter()
+        .filter_map(|path| {
+            let file = File::open(path).ok()?;
+            let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
+            let metadata = builder.metadata();
+            let num_rows = metadata.file_metadata().num_rows() as usize;
+            let (min_ts, max_ts) = get_timestamp_range(metadata);
+
+            Some(FileMetadata {
+                path: path.clone(),
+                num_rows,
+                min_timestamp: min_ts,
+                max_timestamp: max_ts,
+            })
+        })
+        .collect();
+
+    // Sort by min timestamp (oldest first)
+    file_metadata.sort_by_key(|metadata| metadata.min_timestamp.unwrap_or(i64::MAX));
+
+    // Phase 2: Select consecutive files based on metadata timestamps
+    let mut consecutive_files = Vec::new();
+    let mut prev_max_ts: Option<i64> = None;
+    const MAX_GAP_NS: i64 = 25 * 60 * 60 * 1_000_000_000; // 25 hours gap tolerance
+
+    for metadata in file_metadata {
+        if let (Some(file_min), Some(file_max)) = (metadata.min_timestamp, metadata.max_timestamp) {
+            let is_consecutive = if let Some(prev_max) = prev_max_ts {
+                let gap = file_min.saturating_sub(prev_max);
+                gap <= MAX_GAP_NS
+            } else {
+                true // First file is always accepted
+            };
+
+            if is_consecutive {
+                consecutive_files.push(metadata.clone());
+                prev_max_ts = Some(file_max);
+            } else {
+                break; // Gap detected - stop looking for more files
+            }
+        }
+    }
+
+    // Phase 3: Load consecutive files and collect batches
+    // NOTE: This function now truncates the last batch if it would exceed max_rows
+    // to ensure we return exactly max_rows of data (matching load_parquet_data behavior)
+    let mut all_batches = Vec::new();
+    let mut total_rows = 0;
+
+    println!(
+        "Loading RecordBatches from {} files...",
+        consecutive_files.len()
+    );
+
+    for metadata in consecutive_files {
+        let file = File::open(&metadata.path).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to open {:?}: {}", metadata.path, e),
+            )
+        })?;
+
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to read parquet from {:?}: {}", metadata.path, e),
+            )
+        })?;
+
+        let reader = builder.build().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to build reader for {:?}: {}", metadata.path, e),
+            )
+        })?;
+
+        let batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to read batches from {:?}: {}", metadata.path, e),
+            )
+        })?;
+
+        for batch in batches {
+            let batch_rows = batch.num_rows();
+            let remaining_capacity = config.max_rows.saturating_sub(total_rows);
+
+            if remaining_capacity == 0 {
+                // Already at limit
+                println!(
+                    "Reached row limit: {} rows from {} batches",
+                    total_rows,
+                    all_batches.len()
+                );
+                return Ok(all_batches);
+            }
+
+            if batch_rows <= remaining_capacity {
+                // Entire batch fits
+                total_rows += batch_rows;
+                all_batches.push(batch);
+            } else {
+                // Need to truncate this batch to fit exactly max_rows
+                let truncated_batch = batch.slice(0, remaining_capacity);
+                total_rows += remaining_capacity;
+                all_batches.push(truncated_batch);
+
+                println!(
+                    "Truncated last batch to {} rows (original had {})",
+                    remaining_capacity, batch_rows
+                );
+                println!(
+                    "Reached row limit: exactly {} rows from {} batches",
+                    total_rows,
+                    all_batches.len()
+                );
+                return Ok(all_batches);
+            }
+
+            // Check if we've exactly hit the limit
+            if total_rows == config.max_rows {
+                println!(
+                    "Reached row limit: exactly {} rows from {} batches",
+                    total_rows,
+                    all_batches.len()
+                );
+                return Ok(all_batches);
+            }
+        }
+    }
+
+    println!(
+        "Loaded {} rows from {} batches",
+        total_rows,
+        all_batches.len()
+    );
+
+    Ok(all_batches)
 }
