@@ -1,32 +1,42 @@
 //! Streaming builders for constructing caches incrementally from record batch streams.
 //!
-//! This module provides builders that can construct `ValueAwareLapperCache` instances
-//! from streams of record batches, avoiding the need to load all data into memory
-//! at once.
+//! This module provides builders that can construct `ValueAwareLapperCache` and
+//! `BitmapLapperCache` instances from streams of record batches, avoiding the need
+//! to load all data into memory at once.
 //!
 //! # Example
 //! ```ignore
-//! use tag_values_cache::streaming::ChunkedStreamBuilder;
+//! use tag_values_cache::streaming::{ChunkedStreamBuilder, BitmapChunkedStreamBuilder};
 //! use std::time::Duration;
 //!
+//! // ValueAwareLapperCache builder
 //! let mut builder = ChunkedStreamBuilder::new(
 //!     Duration::from_secs(3600), // 1 hour resolution
 //!     1_000_000,                  // 1M points per chunk
 //! );
 //!
+//! // BitmapLapperCache builder (often more efficient)
+//! let mut bitmap_builder = BitmapChunkedStreamBuilder::new(
+//!     Duration::from_secs(3600),
+//!     1_000_000,
+//! );
+//!
 //! // Process stream of batches
 //! for batch in record_batch_stream {
 //!     builder.process_batch(&batch)?;
+//!     bitmap_builder.process_batch(&batch)?;
 //! }
 //!
-//! // Finalize and get the cache
+//! // Finalize and get the caches
 //! let cache = builder.finalize()?;
+//! let bitmap_cache = bitmap_builder.finalize()?;
 //! ```
 
 use arrow::array::RecordBatch;
 use arrow_util::dictionary::StringDictionary;
 use std::time::Duration;
 
+use crate::bitmap_lapper_cache::BitmapLapperCache;
 use crate::value_aware_lapper_cache::ValueAwareLapperCache;
 use crate::{CacheBuildError, TagSet, extract_tags_from_batch};
 
@@ -696,6 +706,331 @@ impl std::fmt::Display for SortedStreamStats {
             "SortedStreamStats {{ total_points: {}, unique_tagsets: {}, out_of_order: {} }}",
             self.total_points, self.unique_tagsets, self.out_of_order_detected
         )
+    }
+}
+
+// ============================================================================
+// BitmapLapperCache Streaming Builders
+// ============================================================================
+
+/// A builder that constructs a `BitmapLapperCache` by processing data in chunks.
+///
+/// This is identical in behavior to `ChunkedStreamBuilder` but produces a `BitmapLapperCache`
+/// instead of `ValueAwareLapperCache`. The bitmap implementation is often more efficient
+/// for high-cardinality data.
+///
+/// See `ChunkedStreamBuilder` documentation for usage details.
+pub struct BitmapChunkedStreamBuilder {
+    /// The cache being built (None until first chunk is processed)
+    cache: Option<BitmapLapperCache>,
+
+    /// Buffer for accumulating points before flushing
+    chunk_buffer: Vec<(u64, TagSet)>,
+
+    /// Maximum number of points to buffer before flushing
+    chunk_size: usize,
+
+    /// Time resolution for bucketing timestamps
+    resolution: Duration,
+
+    /// Statistics for monitoring
+    total_points_processed: usize,
+    chunks_flushed: usize,
+}
+
+impl BitmapChunkedStreamBuilder {
+    /// Creates a new bitmap chunked stream builder.
+    pub fn new(resolution: Duration, chunk_size: usize) -> Self {
+        Self {
+            cache: None,
+            chunk_buffer: Vec::with_capacity(chunk_size),
+            chunk_size,
+            resolution,
+            total_points_processed: 0,
+            chunks_flushed: 0,
+        }
+    }
+
+    pub fn buffered_count(&self) -> usize {
+        self.chunk_buffer.len()
+    }
+
+    pub fn total_points(&self) -> usize {
+        self.total_points_processed
+    }
+
+    pub fn chunks_flushed(&self) -> usize {
+        self.chunks_flushed
+    }
+
+    pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
+        let points = extract_tags_from_batch(batch);
+        self.process_points(points)
+    }
+
+    fn process_points(&mut self, points: Vec<(u64, TagSet)>) -> Result<(), CacheBuildError> {
+        let num_points = points.len();
+        self.chunk_buffer.extend(points);
+        self.total_points_processed += num_points;
+
+        if self.chunk_buffer.len() >= self.chunk_size {
+            self.flush_chunk()?;
+        }
+
+        Ok(())
+    }
+
+    pub fn flush_chunk(&mut self) -> Result<(), CacheBuildError> {
+        if self.chunk_buffer.is_empty() {
+            return Ok(());
+        }
+
+        let chunk_data =
+            std::mem::replace(&mut self.chunk_buffer, Vec::with_capacity(self.chunk_size));
+
+        match &mut self.cache {
+            None => {
+                self.cache = Some(BitmapLapperCache::from_unsorted_with_resolution(
+                    chunk_data,
+                    self.resolution,
+                )?);
+            }
+            Some(cache) => {
+                cache.append_unsorted(chunk_data)?;
+            }
+        }
+
+        self.chunks_flushed += 1;
+
+        Ok(())
+    }
+
+    pub fn finalize(mut self) -> Result<BitmapLapperCache, CacheBuildError> {
+        self.flush_chunk()?;
+        Ok(self.cache.expect("No data was processed - cache is empty"))
+    }
+
+    pub fn finalize_with_stats(
+        mut self,
+    ) -> Result<(BitmapLapperCache, StreamingStats), CacheBuildError> {
+        self.flush_chunk()?;
+
+        let stats = StreamingStats {
+            total_points: self.total_points_processed,
+            chunks_flushed: self.chunks_flushed,
+            chunk_size: self.chunk_size,
+        };
+
+        let cache = self.cache.expect("No data was processed - cache is empty");
+
+        Ok((cache, stats))
+    }
+
+    pub async fn process_stream(
+        &mut self,
+        mut stream: SendableRecordBatchStream,
+    ) -> Result<(), CacheBuildError> {
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
+            self.process_batch(&batch)?;
+        }
+        Ok(())
+    }
+
+    pub async fn from_stream(
+        stream: SendableRecordBatchStream,
+        resolution: Duration,
+        chunk_size: usize,
+    ) -> Result<BitmapLapperCache, CacheBuildError> {
+        let mut builder = Self::new(resolution, chunk_size);
+        builder.process_stream(stream).await?;
+        builder.finalize()
+    }
+}
+
+/// A builder that constructs a `BitmapLapperCache` from **sorted** data in a single pass.
+///
+/// This builder uses the bitmap approach which groups tagsets by time bucket rather than
+/// tracking individual tagset intervals. This is significantly more memory efficient for
+/// high-cardinality data.
+///
+/// See `SortedStreamBuilder` documentation for usage details.
+pub struct BitmapSortedStreamBuilder {
+    /// Time resolution for bucketing timestamps
+    resolution: Duration,
+
+    /// String dictionary for encoding tag keys and values
+    string_dict: StringDictionary<usize>,
+
+    /// Vector of encoded TagSets (index = ID)
+    tagsets: Vec<crate::EncodedTagSet>,
+
+    /// Currently open buckets: bucketed_timestamp -> RoaringBitmap of tagset IDs
+    open_buckets: std::collections::BTreeMap<u64, roaring::RoaringBitmap>,
+
+    /// Completed intervals
+    completed_intervals:
+        Vec<rust_lapper::Interval<u64, crate::bitmap_lapper_cache::EqRoaringBitmap>>,
+
+    /// Last timestamp processed (for detecting out-of-order data)
+    last_timestamp: Option<u64>,
+
+    /// Statistics
+    total_points_processed: usize,
+    out_of_order_detected: bool,
+}
+
+impl BitmapSortedStreamBuilder {
+    /// Creates a new bitmap sorted stream builder.
+    pub fn new(resolution: Duration) -> Self {
+        Self {
+            resolution,
+            string_dict: StringDictionary::new(),
+            tagsets: Vec::new(),
+            open_buckets: std::collections::BTreeMap::new(),
+            completed_intervals: Vec::new(),
+            last_timestamp: None,
+            total_points_processed: 0,
+            out_of_order_detected: false,
+        }
+    }
+
+    pub fn total_points(&self) -> usize {
+        self.total_points_processed
+    }
+
+    pub fn is_out_of_order(&self) -> bool {
+        self.out_of_order_detected
+    }
+
+    pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
+        let points = extract_tags_from_batch(batch);
+        self.process_points(points)
+    }
+
+    fn process_points(&mut self, points: Vec<(u64, TagSet)>) -> Result<(), CacheBuildError> {
+        for (timestamp, tagset) in points {
+            self.process_point(timestamp, tagset)?;
+        }
+        Ok(())
+    }
+
+    fn process_point(&mut self, timestamp: u64, tagset: TagSet) -> Result<(), CacheBuildError> {
+        // Check for out-of-order data
+        if let Some(last_ts) = self.last_timestamp
+            && timestamp < last_ts
+        {
+            self.out_of_order_detected = true;
+        }
+        self.last_timestamp = Some(timestamp);
+        self.total_points_processed += 1;
+
+        // Bucket the timestamp
+        let bucketed_ts = BitmapLapperCache::bucket_timestamp(timestamp, self.resolution);
+
+        // Encode the tagset
+        let encoded_tagset = crate::encode_tagset(&tagset, &mut self.string_dict);
+        let tagset_id = if let Some(pos) = self.tagsets.iter().position(|t| t == &encoded_tagset) {
+            pos as u32
+        } else {
+            let id = self.tagsets.len() as u32;
+            self.tagsets.push(encoded_tagset);
+            id
+        };
+
+        // Close buckets that are before this one
+        let mut buckets_to_close = Vec::new();
+        for &bucket_ts in self.open_buckets.keys() {
+            if bucket_ts < bucketed_ts {
+                buckets_to_close.push(bucket_ts);
+            } else {
+                break; // BTreeMap is sorted, so we can stop
+            }
+        }
+
+        for bucket_ts in buckets_to_close {
+            if let Some(bitmap) = self.open_buckets.remove(&bucket_ts) {
+                let stop = bucket_ts
+                    .checked_add(1)
+                    .ok_or(CacheBuildError::TimestampOverflow(bucket_ts))?;
+                self.completed_intervals.push(rust_lapper::Interval {
+                    start: bucket_ts,
+                    stop,
+                    val: bitmap.into(),
+                });
+            }
+        }
+
+        // Add tagset to current bucket
+        self.open_buckets
+            .entry(bucketed_ts)
+            .or_default()
+            .insert(tagset_id);
+
+        Ok(())
+    }
+
+    pub fn finalize(mut self) -> Result<BitmapLapperCache, CacheBuildError> {
+        // Close all remaining open buckets
+        for (bucket_ts, bitmap) in self.open_buckets.into_iter() {
+            let stop = bucket_ts
+                .checked_add(1)
+                .ok_or(CacheBuildError::TimestampOverflow(bucket_ts))?;
+            self.completed_intervals.push(rust_lapper::Interval {
+                start: bucket_ts,
+                stop,
+                val: bitmap.into(),
+            });
+        }
+
+        if self.completed_intervals.is_empty() {
+            return Err(CacheBuildError::NoData);
+        }
+
+        // Build the lapper from completed intervals
+        let lapper = rust_lapper::Lapper::new(self.completed_intervals);
+
+        // Construct the cache
+        Ok(BitmapLapperCache::from_parts(
+            lapper,
+            self.string_dict,
+            self.tagsets,
+            self.resolution,
+        ))
+    }
+
+    pub fn finalize_with_stats(
+        self,
+    ) -> Result<(BitmapLapperCache, SortedStreamStats), CacheBuildError> {
+        let stats = SortedStreamStats {
+            total_points: self.total_points_processed,
+            unique_tagsets: self.tagsets.len(),
+            out_of_order_detected: self.out_of_order_detected,
+        };
+
+        let cache = self.finalize()?;
+
+        Ok((cache, stats))
+    }
+
+    pub async fn process_stream(
+        &mut self,
+        mut stream: SendableRecordBatchStream,
+    ) -> Result<(), CacheBuildError> {
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
+            self.process_batch(&batch)?;
+        }
+        Ok(())
+    }
+
+    pub async fn from_stream(
+        stream: SendableRecordBatchStream,
+        resolution: Duration,
+    ) -> Result<BitmapLapperCache, CacheBuildError> {
+        let mut builder = Self::new(resolution);
+        builder.process_stream(stream).await?;
+        builder.finalize()
     }
 }
 
@@ -1880,5 +2215,504 @@ mod tests {
 
         // Both should produce identical results
         assert_caches_deeply_equal(&sorted_cache, &chunked_cache, "sorted vs chunked");
+    }
+
+    // ============================================================================
+    // Tests for BitmapLapperCache Streaming Builders
+    // ============================================================================
+
+    /// Helper to normalize bitmap query results for comparison
+    fn normalize_bitmap_results<'a>(
+        mut results: Vec<Vec<(&'a str, &'a str)>>,
+    ) -> Vec<Vec<(&'a str, &'a str)>> {
+        for tagset in results.iter_mut() {
+            tagset.sort();
+        }
+        results.sort();
+        results
+    }
+
+    #[test]
+    fn test_bitmap_chunked_builder_single_chunk() {
+        let resolution = Duration::from_secs(1);
+        let mut builder = super::BitmapChunkedStreamBuilder::new(resolution, 10);
+
+        let points = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "b")])),
+        ];
+
+        builder.process_points(points).unwrap();
+        assert_eq!(builder.buffered_count(), 3);
+        assert_eq!(builder.chunks_flushed(), 0);
+
+        let cache = builder.finalize().unwrap();
+
+        // Verify cache works correctly
+        let results1 = cache.query_point(1);
+        assert!(!results1.is_empty(), "Should have results at timestamp 1");
+
+        let results2 = cache.query_point(2);
+        assert!(!results2.is_empty(), "Should have results at timestamp 2");
+
+        let results3 = cache.query_point(3);
+        assert!(!results3.is_empty(), "Should have results at timestamp 3");
+    }
+
+    #[test]
+    fn test_bitmap_chunked_builder_multiple_chunks() {
+        let resolution = Duration::from_secs(1);
+        let mut builder = super::BitmapChunkedStreamBuilder::new(resolution, 5);
+
+        // First chunk
+        let points1 = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "a")])),
+            (4, make_tagset(&[("host", "a")])),
+            (5, make_tagset(&[("host", "a")])),
+        ];
+
+        builder.process_points(points1).unwrap();
+        assert_eq!(builder.buffered_count(), 0); // Flushed
+        assert_eq!(builder.chunks_flushed(), 1);
+
+        // Second chunk
+        let points2 = vec![
+            (6, make_tagset(&[("host", "b")])),
+            (7, make_tagset(&[("host", "b")])),
+        ];
+
+        builder.process_points(points2).unwrap();
+        assert_eq!(builder.buffered_count(), 2);
+        assert_eq!(builder.chunks_flushed(), 1);
+
+        let cache = builder.finalize().unwrap();
+
+        // Verify data from both chunks
+        let results1 = cache.query_point(1);
+        assert!(!results1.is_empty(), "Should have results from first chunk");
+
+        let results2 = cache.query_point(6);
+        assert!(
+            !results2.is_empty(),
+            "Should have results from second chunk"
+        );
+    }
+
+    #[test]
+    fn test_bitmap_chunked_equals_batch() {
+        let resolution = Duration::from_secs(1);
+        let chunk_size = 3;
+
+        let data = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "a")])),
+            (5, make_tagset(&[("host", "b")])),
+            (6, make_tagset(&[("host", "b")])),
+            (10, make_tagset(&[("host", "a")])),
+        ];
+
+        // Build with streaming
+        let mut streaming_builder = super::BitmapChunkedStreamBuilder::new(resolution, chunk_size);
+        streaming_builder.process_points(data.clone()).unwrap();
+        let streaming_cache = streaming_builder.finalize().unwrap();
+
+        // Build with batch
+        let batch_cache =
+            crate::BitmapLapperCache::from_unsorted_with_resolution(data.clone(), resolution)
+                .unwrap();
+
+        // Assert they produce identical results
+        assert_eq!(
+            streaming_cache.interval_count(),
+            batch_cache.interval_count(),
+            "Interval counts must match"
+        );
+
+        // Query several points and verify results match
+        for timestamp in [1, 2, 3, 4, 5, 6, 7, 10, 15] {
+            let streaming_results =
+                normalize_bitmap_results(streaming_cache.query_point(timestamp));
+            let batch_results = normalize_bitmap_results(batch_cache.query_point(timestamp));
+
+            assert_eq!(
+                streaming_results, batch_results,
+                "Query results must match for timestamp {}",
+                timestamp
+            );
+        }
+    }
+
+    #[test]
+    fn test_bitmap_chunked_equals_batch_large() {
+        let resolution = Duration::from_secs(60);
+        let chunk_size = 100;
+
+        // Generate larger dataset
+        let mut data = Vec::new();
+        for t in 1..=1000 {
+            let host = format!("host-{}", t % 20);
+            data.push((t, make_tagset(&[("host", &host)])));
+        }
+
+        // Build with streaming
+        let mut streaming_builder = super::BitmapChunkedStreamBuilder::new(resolution, chunk_size);
+        streaming_builder.process_points(data.clone()).unwrap();
+        let streaming_cache = streaming_builder.finalize().unwrap();
+
+        // Build with batch
+        let batch_cache =
+            crate::BitmapLapperCache::from_unsorted_with_resolution(data.clone(), resolution)
+                .unwrap();
+
+        // Assert interval counts match
+        assert_eq!(
+            streaming_cache.interval_count(),
+            batch_cache.interval_count(),
+            "Interval counts must match"
+        );
+
+        // Query full range
+        use std::ops::Range;
+        let query_range = Range {
+            start: 1,
+            end: 1001,
+        };
+        let streaming_results = normalize_bitmap_results(streaming_cache.query_range(&query_range));
+        let batch_results = normalize_bitmap_results(batch_cache.query_range(&query_range));
+
+        assert_eq!(
+            streaming_results, batch_results,
+            "Range query results must match"
+        );
+    }
+
+    #[test]
+    fn test_bitmap_chunked_different_chunk_sizes() {
+        let resolution = Duration::from_secs(5);
+
+        // Generate test data
+        let mut data = Vec::new();
+        for t in 1..=300 {
+            let host = format!("host-{}", t % 10);
+            data.push((t, make_tagset(&[("host", &host)])));
+        }
+
+        // Build batch cache (reference)
+        let batch_cache =
+            crate::BitmapLapperCache::from_unsorted_with_resolution(data.clone(), resolution)
+                .unwrap();
+
+        // Test different chunk sizes
+        let chunk_sizes = [10, 50, 100, 299, 300, 500];
+
+        for chunk_size in chunk_sizes {
+            let mut streaming_builder =
+                super::BitmapChunkedStreamBuilder::new(resolution, chunk_size);
+            streaming_builder.process_points(data.clone()).unwrap();
+            let streaming_cache = streaming_builder.finalize().unwrap();
+
+            assert_eq!(
+                streaming_cache.interval_count(),
+                batch_cache.interval_count(),
+                "Interval count mismatch with chunk_size={}",
+                chunk_size
+            );
+
+            // Spot check
+            for timestamp in [1, 150, 300] {
+                let streaming_results =
+                    normalize_bitmap_results(streaming_cache.query_point(timestamp));
+                let batch_results = normalize_bitmap_results(batch_cache.query_point(timestamp));
+
+                assert_eq!(
+                    streaming_results, batch_results,
+                    "Query mismatch at timestamp {} with chunk_size={}",
+                    timestamp, chunk_size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_bitmap_sorted_builder_simple() {
+        let resolution = Duration::from_nanos(1);
+        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+
+        let points = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "b")])),
+            (4, make_tagset(&[("host", "b")])),
+        ];
+
+        builder.process_points(points).unwrap();
+        assert_eq!(builder.total_points(), 4);
+        assert!(!builder.is_out_of_order());
+
+        let cache = builder.finalize().unwrap();
+
+        // Verify cache works
+        let results1 = cache.query_point(1);
+        assert!(!results1.is_empty(), "Should have results at timestamp 1");
+
+        let results3 = cache.query_point(3);
+        assert!(!results3.is_empty(), "Should have results at timestamp 3");
+    }
+
+    #[test]
+    fn test_bitmap_sorted_builder_detects_out_of_order() {
+        let resolution = Duration::from_nanos(1);
+        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+
+        let points = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])), // Out of order!
+            (4, make_tagset(&[("host", "a")])),
+        ];
+
+        builder.process_points(points).unwrap();
+        assert!(builder.is_out_of_order(), "Should detect out-of-order data");
+
+        // Can still finalize
+        let _cache = builder.finalize().unwrap();
+    }
+
+    #[test]
+    fn test_bitmap_sorted_equals_batch() {
+        let resolution = Duration::from_nanos(1);
+
+        let mut data = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "b")])),
+            (5, make_tagset(&[("host", "b")])),
+            (6, make_tagset(&[("host", "a")])),
+            (10, make_tagset(&[("host", "c")])),
+        ];
+
+        // Sort by (timestamp, tagset)
+        data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        // Build with sorted stream builder
+        let mut sorted_builder = super::BitmapSortedStreamBuilder::new(resolution);
+        sorted_builder.process_points(data.clone()).unwrap();
+        let sorted_cache = sorted_builder.finalize().unwrap();
+
+        // Build with batch method
+        let batch_cache =
+            crate::BitmapLapperCache::from_unsorted_with_resolution(data, resolution).unwrap();
+
+        // Assert interval counts match
+        assert_eq!(
+            sorted_cache.interval_count(),
+            batch_cache.interval_count(),
+            "Interval counts must match"
+        );
+
+        // Spot check queries
+        for timestamp in [1, 2, 3, 5, 6, 10] {
+            let sorted_results = normalize_bitmap_results(sorted_cache.query_point(timestamp));
+            let batch_results = normalize_bitmap_results(batch_cache.query_point(timestamp));
+
+            assert_eq!(
+                sorted_results, batch_results,
+                "Query results must match for timestamp {}",
+                timestamp
+            );
+        }
+    }
+
+    #[test]
+    fn test_bitmap_sorted_equals_batch_large() {
+        let resolution = Duration::from_secs(60);
+
+        // Generate larger dataset
+        let mut data = Vec::new();
+        for t in 1..=1000 {
+            let host = format!("host-{}", t % 10);
+            data.push((t, make_tagset(&[("host", &host)])));
+        }
+
+        // Sort by (timestamp, tagset)
+        data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        // Build with sorted stream builder
+        let mut sorted_builder = super::BitmapSortedStreamBuilder::new(resolution);
+        sorted_builder.process_points(data.clone()).unwrap();
+        let sorted_cache = sorted_builder.finalize().unwrap();
+
+        // Build with batch method
+        let batch_cache =
+            crate::BitmapLapperCache::from_unsorted_with_resolution(data.clone(), resolution)
+                .unwrap();
+
+        // Assert interval counts match
+        assert_eq!(
+            sorted_cache.interval_count(),
+            batch_cache.interval_count(),
+            "Interval counts must match"
+        );
+
+        // Range query
+        use std::ops::Range;
+        let query_range = Range {
+            start: 1,
+            end: 1001,
+        };
+        let sorted_results = normalize_bitmap_results(sorted_cache.query_range(&query_range));
+        let batch_results = normalize_bitmap_results(batch_cache.query_range(&query_range));
+
+        assert_eq!(
+            sorted_results, batch_results,
+            "Range query results must match"
+        );
+    }
+
+    #[test]
+    fn test_bitmap_sorted_builder_high_cardinality() {
+        let resolution = Duration::from_secs(60);
+        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+
+        // Generate high cardinality data
+        let mut data = Vec::new();
+        for t in 1..=500 {
+            let host = format!("host-{}", t % 50);
+            let region = format!("region-{}", t % 5);
+            data.push((t, make_tagset(&[("host", &host), ("region", &region)])));
+        }
+
+        // Sort by (timestamp, tagset)
+        data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        builder.process_points(data.clone()).unwrap();
+        let sorted_cache = builder.finalize().unwrap();
+
+        // Compare with batch build
+        let batch_cache =
+            crate::BitmapLapperCache::from_unsorted_with_resolution(data, resolution).unwrap();
+
+        // Assert interval counts match
+        assert_eq!(
+            sorted_cache.interval_count(),
+            batch_cache.interval_count(),
+            "High cardinality: interval counts must match"
+        );
+    }
+
+    #[test]
+    fn test_bitmap_sorted_vs_chunked_builders() {
+        let resolution = Duration::from_secs(60);
+
+        // Generate data
+        let mut data = Vec::new();
+        for t in 1..=1000 {
+            let host = format!("host-{}", t % 20);
+            data.push((t, make_tagset(&[("host", &host)])));
+        }
+
+        // Sort by (timestamp, tagset) for sorted builder
+        data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+        // Build with bitmap sorted builder
+        let mut sorted_builder = super::BitmapSortedStreamBuilder::new(resolution);
+        sorted_builder.process_points(data.clone()).unwrap();
+        let sorted_cache = sorted_builder.finalize().unwrap();
+
+        // Build with bitmap chunked builder
+        let mut chunked_builder = super::BitmapChunkedStreamBuilder::new(resolution, 100);
+        chunked_builder.process_points(data.clone()).unwrap();
+        let chunked_cache = chunked_builder.finalize().unwrap();
+
+        // Both should produce identical results
+        assert_eq!(
+            sorted_cache.interval_count(),
+            chunked_cache.interval_count(),
+            "Interval counts must match"
+        );
+
+        // Spot check queries
+        for timestamp in [1, 250, 500, 750, 1000] {
+            let sorted_results = normalize_bitmap_results(sorted_cache.query_point(timestamp));
+            let chunked_results = normalize_bitmap_results(chunked_cache.query_point(timestamp));
+
+            assert_eq!(
+                sorted_results, chunked_results,
+                "Query results must match for timestamp {}",
+                timestamp
+            );
+        }
+    }
+
+    #[test]
+    fn test_bitmap_chunked_with_stats() {
+        let resolution = Duration::from_secs(1);
+        let mut builder = super::BitmapChunkedStreamBuilder::new(resolution, 3);
+
+        let points1 = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "a")])),
+            (3, make_tagset(&[("host", "a")])),
+        ];
+        builder.process_points(points1).unwrap();
+
+        let points2 = vec![
+            (4, make_tagset(&[("host", "a")])),
+            (5, make_tagset(&[("host", "a")])),
+        ];
+        builder.process_points(points2).unwrap();
+
+        let (_cache, stats) = builder.finalize_with_stats().unwrap();
+
+        assert_eq!(stats.total_points, 5);
+        assert_eq!(stats.chunks_flushed, 2);
+        assert_eq!(stats.chunk_size, 3);
+        assert_eq!(stats.avg_chunk_size(), 2.5);
+    }
+
+    #[test]
+    fn test_bitmap_sorted_with_stats() {
+        let resolution = Duration::from_nanos(1);
+        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+
+        let data = vec![
+            (1, make_tagset(&[("host", "a"), ("region", "us-east")])),
+            (2, make_tagset(&[("host", "b"), ("region", "us-west")])),
+            (3, make_tagset(&[("host", "a"), ("region", "us-east")])), // Reused tagset
+            (4, make_tagset(&[("host", "c"), ("region", "eu-west")])),
+        ];
+
+        builder.process_points(data).unwrap();
+        let (cache, stats) = builder.finalize_with_stats().unwrap();
+
+        assert_eq!(stats.total_points, 4);
+        assert_eq!(stats.unique_tagsets, 3);
+        assert!(!stats.out_of_order_detected);
+
+        assert!(cache.interval_count() > 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "No data was processed - cache is empty")]
+    fn test_bitmap_chunked_empty() {
+        let resolution = Duration::from_secs(1);
+        let builder = super::BitmapChunkedStreamBuilder::new(resolution, 10);
+        let _cache = builder.finalize().unwrap();
+    }
+
+    #[test]
+    fn test_bitmap_sorted_empty() {
+        let resolution = Duration::from_nanos(1);
+        let builder = super::BitmapSortedStreamBuilder::new(resolution);
+
+        let result = builder.finalize();
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(matches!(e, CacheBuildError::NoData));
+        }
     }
 }

@@ -52,11 +52,7 @@ fn get_data() -> Option<&'static Vec<(u64, TagSet)>> {
     });
 
     let data = DATA.get().unwrap();
-    if data.is_empty() {
-        None
-    } else {
-        Some(data)
-    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 /// Helper to calculate cardinality (unique tag combinations)
@@ -104,8 +100,14 @@ fn bench_construction(c: &mut Criterion) {
             "\nResolution: {} - Cardinality: {}, Time buckets: {}",
             name, cardinality, buckets
         );
-        println!("  ValueAwareLapperCache: {} intervals (approx)", buckets * cardinality);
-        println!("  BitmapLapperCache: {} intervals ({}x reduction!)", buckets, cardinality);
+        println!(
+            "  ValueAwareLapperCache: {} intervals (approx)",
+            buckets * cardinality
+        );
+        println!(
+            "  BitmapLapperCache: {} intervals ({}x reduction!)",
+            buckets, cardinality
+        );
 
         group.bench_with_input(
             BenchmarkId::new("ValueAwareLapper", name),
@@ -176,11 +178,11 @@ fn bench_point_queries(c: &mut Criterion) {
 
     // Test queries at different timestamps
     let timestamps = vec![
-        data[0].0,                                     // First
-        data[data.len() / 2].0,                        // Middle
-        data[data.len() - 1].0,                        // Last
-        data[data.len() / 4].0,                        // Quarter
-        data[data.len() * 3 / 4].0,                    // Three-quarters
+        data[0].0,                  // First
+        data[data.len() / 2].0,     // Middle
+        data[data.len() - 1].0,     // Last
+        data[data.len() / 4].0,     // Quarter
+        data[data.len() * 3 / 4].0, // Three-quarters
     ];
 
     let mut group = c.benchmark_group("point_query");
@@ -297,7 +299,11 @@ fn bench_memory_usage(c: &mut Criterion) {
         let cache =
             ValueAwareLapperCache::from_unsorted_with_resolution(data.clone(), resolution).unwrap();
         let size = cache.size_bytes();
-        println!("\nValueAwareLapperCache size: {} bytes ({:.2} MB)", size, size as f64 / 1_048_576.0);
+        println!(
+            "\nValueAwareLapperCache size: {} bytes ({:.2} MB)",
+            size,
+            size as f64 / 1_048_576.0
+        );
         b.iter(|| black_box(cache.size_bytes()));
     });
 
@@ -305,7 +311,11 @@ fn bench_memory_usage(c: &mut Criterion) {
         let cache =
             BitmapLapperCache::from_unsorted_with_resolution(data.clone(), resolution).unwrap();
         let size = cache.size_bytes();
-        println!("BitmapLapperCache size: {} bytes ({:.2} MB)", size, size as f64 / 1_048_576.0);
+        println!(
+            "BitmapLapperCache size: {} bytes ({:.2} MB)",
+            size,
+            size as f64 / 1_048_576.0
+        );
         b.iter(|| black_box(cache.size_bytes()));
     });
 
@@ -335,7 +345,10 @@ fn bench_interval_scaling(c: &mut Criterion) {
 
     println!("\n=== Interval Count Scaling ===");
     println!("Data cardinality: {}\n", cardinality);
-    println!("{:<10} {:<10} {:<20} {:<20} {:<10}", "Resolution", "Buckets", "ValueAware", "Bitmap", "Reduction");
+    println!(
+        "{:<10} {:<10} {:<20} {:<20} {:<10}",
+        "Resolution", "Buckets", "ValueAware", "Bitmap", "Reduction"
+    );
     println!("{}", "-".repeat(80));
 
     for (name, resolution) in &resolutions {
