@@ -29,6 +29,7 @@ use arrow::array::{RecordBatch, as_dictionary_array, as_primitive_array, as_stri
 use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
 use rayon::prelude::*;
 
+pub mod bitmap_lapper_cache;
 pub mod btree_cache;
 pub mod interavl_cache;
 pub mod interval_tree;
@@ -42,6 +43,7 @@ pub mod value_aware_lapper_cache;
 pub mod vec_cache;
 
 // Re-export the implementations for convenience
+pub use bitmap_lapper_cache::BitmapLapperCache;
 pub use btree_cache::BTreeCache;
 pub use interval_tree::IntervalTreeCache;
 pub use lapper_cache::LapperCache;
