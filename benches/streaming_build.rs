@@ -8,6 +8,23 @@
 //
 // The async variants demonstrate true streaming benefits - reading data incrementally
 // from disk with bounded memory usage, never loading the entire dataset into memory.
+//
+// # Environment Variables
+//
+// - `BENCH_INPUT_PATH`: Path to parquet files (default: "benches/data/parquet")
+// - `BENCH_MAX_ROWS`: Maximum rows to load (default: 100,000)
+// - `BENCH_MAX_DURATION`: Max time span (default: "1h")
+//   - Supports: "30s", "5m", "1h", "2d", "1week" or raw nanoseconds
+//
+// # Examples
+//
+// ```bash
+// # Default run
+// cargo bench --bench streaming_build
+//
+// # Custom duration
+// BENCH_MAX_DURATION=30m cargo bench --bench streaming_build
+// ```
 
 mod data_loader;
 

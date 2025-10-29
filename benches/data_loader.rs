@@ -25,6 +25,69 @@ pub enum InputType {
 }
 
 impl BenchConfig {
+    /// Parse a human-readable duration string into nanoseconds.
+    ///
+    /// Supported formats:
+    /// - "1s" or "1sec" = 1 second
+    /// - "30m" or "30min" = 30 minutes
+    /// - "1h" or "1hr" = 1 hour
+    /// - "1d" or "1day" = 1 day
+    /// - "7d" = 7 days
+    /// - "123456789" (just a number) = treated as nanoseconds
+    ///
+    /// # Examples
+    /// ```
+    /// assert_eq!(parse_duration("1s"), Some(1_000_000_000));
+    /// assert_eq!(parse_duration("30m"), Some(30 * 60 * 1_000_000_000));
+    /// assert_eq!(parse_duration("1h"), Some(60 * 60 * 1_000_000_000));
+    /// assert_eq!(parse_duration("1d"), Some(24 * 60 * 60 * 1_000_000_000));
+    /// ```
+    fn parse_duration(s: &str) -> Option<u64> {
+        let s = s.trim();
+
+        // If it's just a number, treat it as nanoseconds
+        if let Ok(ns) = s.parse::<u64>() {
+            return Some(ns);
+        }
+
+        // Try to parse as human-readable duration
+        let mut chars = s.chars().peekable();
+        let mut number_str = String::new();
+
+        // Collect digits
+        while let Some(&ch) = chars.peek() {
+            if ch.is_ascii_digit() {
+                number_str.push(ch);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        if number_str.is_empty() {
+            return None;
+        }
+
+        let number: u64 = number_str.parse().ok()?;
+        let unit: String = chars.collect();
+        let unit = unit.trim().to_lowercase();
+
+        let multiplier = match unit.as_str() {
+            "ns" | "nsec" | "nanosecond" | "nanoseconds" => 1,
+            "us" | "usec" | "microsecond" | "microseconds" => 1_000,
+            "ms" | "msec" | "millisecond" | "milliseconds" => 1_000_000,
+            "s" | "sec" | "second" | "seconds" => 1_000_000_000,
+            "m" | "min" | "minute" | "minutes" => 60 * 1_000_000_000,
+            "h" | "hr" | "hour" | "hours" => 60 * 60 * 1_000_000_000,
+            "d" | "day" | "days" => 24 * 60 * 60 * 1_000_000_000,
+            "w" | "week" | "weeks" => 7 * 24 * 60 * 60 * 1_000_000_000,
+            "" => 1, // No unit means nanoseconds
+            _ => return None,
+        };
+
+        Some(number * multiplier)
+    }
+
     /// Load configuration from environment variables with defaults
     pub fn from_env() -> Self {
         let input_path = std::env::var("BENCH_INPUT_PATH")
@@ -46,10 +109,18 @@ impl BenchConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(100_000); // Reduced from 10M to 100K for faster benchmarks
 
-        let max_duration_ns = std::env::var("BENCH_MAX_DURATION_NS")
+        // Parse duration with human-readable format support
+        // Try BENCH_MAX_DURATION first (new human-readable format)
+        // Fall back to BENCH_MAX_DURATION_NS (legacy nanoseconds)
+        let max_duration_ns = std::env::var("BENCH_MAX_DURATION")
             .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(60 * 60 * 1_000_000_000); // Reduced from 7 days to 1 hour
+            .and_then(|s| Self::parse_duration(&s))
+            .or_else(|| {
+                std::env::var("BENCH_MAX_DURATION_NS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(60 * 60 * 1_000_000_000); // Default: 1 hour
 
         let max_cardinality = std::env::var("BENCH_MAX_CARDINALITY")
             .ok()
@@ -93,15 +164,58 @@ impl BenchConfig {
         InputType::Parquet
     }
 
+    /// Format nanoseconds as human-readable duration
+    fn format_duration(ns: u64) -> String {
+        const WEEK_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+        const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+        const HOUR_NS: u64 = 60 * 60 * 1_000_000_000;
+        const MIN_NS: u64 = 60 * 1_000_000_000;
+        const SEC_NS: u64 = 1_000_000_000;
+
+        let mut remaining = ns;
+        let mut parts = Vec::new();
+
+        if remaining >= WEEK_NS {
+            let weeks = remaining / WEEK_NS;
+            parts.push(format!("{}w", weeks));
+            remaining %= WEEK_NS;
+        }
+        if remaining >= DAY_NS {
+            let days = remaining / DAY_NS;
+            parts.push(format!("{}d", days));
+            remaining %= DAY_NS;
+        }
+        if remaining >= HOUR_NS {
+            let hours = remaining / HOUR_NS;
+            parts.push(format!("{}h", hours));
+            remaining %= HOUR_NS;
+        }
+        if remaining >= MIN_NS {
+            let mins = remaining / MIN_NS;
+            parts.push(format!("{}m", mins));
+            remaining %= MIN_NS;
+        }
+        if remaining >= SEC_NS {
+            let secs = remaining / SEC_NS;
+            parts.push(format!("{}s", secs));
+            remaining %= SEC_NS;
+        }
+        if remaining > 0 || parts.is_empty() {
+            parts.push(format!("{}ns", remaining));
+        }
+
+        parts.join(" ")
+    }
+
     pub fn print_config(&self) {
         println!("\n=== Benchmark Configuration ===");
         println!("Input path: {:?}", self.input_path);
         println!("Input type: {:?}", self.input_type);
         println!("Max rows: {}", self.max_rows);
         println!(
-            "Max duration: {} ns (~{} days)",
-            self.max_duration_ns,
-            self.max_duration_ns / (24 * 60 * 60 * 1_000_000_000)
+            "Max duration: {} ({})",
+            Self::format_duration(self.max_duration_ns),
+            self.max_duration_ns
         );
         if let Some(card) = self.max_cardinality {
             println!("Max cardinality: {}", card);

@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "streaming_build"
 harness = false
+
+[[bench]]
+name = "bitmap_comparison"
+harness = false
