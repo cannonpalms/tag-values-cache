@@ -41,3 +41,7 @@ harness = false
 [[bench]]
 name = "bitmap_comparison"
 harness = false
+
+[[bench]]
+name = "bitmap_comparison_streaming"
+harness = false
