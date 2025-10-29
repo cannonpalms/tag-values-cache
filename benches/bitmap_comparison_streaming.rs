@@ -101,7 +101,10 @@ fn bench_streaming_construction(c: &mut Criterion) {
     println!("Total rows: {}, Cardinality: {}", total_rows, cardinality);
 
     for (name, resolution, chunk_size) in configs {
-        println!("\nConfig: {} (resolution={:?}, chunk_size={})", name, resolution, chunk_size);
+        println!(
+            "\nConfig: {} (resolution={:?}, chunk_size={})",
+            name, resolution, chunk_size
+        );
 
         group.bench_with_input(
             BenchmarkId::new("ValueAwareLapper", name),
@@ -160,8 +163,14 @@ fn bench_streaming_queries(c: &mut Criterion) {
     let bitmap_cache = bitmap_builder.finalize().unwrap();
 
     println!("\n=== Streaming-Built Cache Comparison ===");
-    println!("ValueAwareLapperCache intervals: {}", value_aware_cache.interval_count());
-    println!("BitmapLapperCache intervals: {}", bitmap_cache.interval_count());
+    println!(
+        "ValueAwareLapperCache intervals: {}",
+        value_aware_cache.interval_count()
+    );
+    println!(
+        "BitmapLapperCache intervals: {}",
+        bitmap_cache.interval_count()
+    );
     println!(
         "Interval reduction: {:.1}x",
         value_aware_cache.interval_count() as f64 / bitmap_cache.interval_count() as f64
@@ -182,8 +191,13 @@ fn bench_streaming_queries(c: &mut Criterion) {
     }
 
     // Test point queries at different positions
-    let test_positions = [0, all_timestamps.len() / 4, all_timestamps.len() / 2,
-                          all_timestamps.len() * 3 / 4, all_timestamps.len() - 1];
+    let test_positions = [
+        0,
+        all_timestamps.len() / 4,
+        all_timestamps.len() / 2,
+        all_timestamps.len() * 3 / 4,
+        all_timestamps.len() - 1,
+    ];
 
     let mut group = c.benchmark_group("streaming_point_query");
 
@@ -280,16 +294,12 @@ fn bench_streaming_range_queries(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("BitmapLapper", name),
-            &range,
-            |b, r| {
-                b.iter(|| {
-                    let result = bitmap_cache.query_range(black_box(r));
-                    black_box(result)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("BitmapLapper", name), &range, |b, r| {
+            b.iter(|| {
+                let result = bitmap_cache.query_range(black_box(r));
+                black_box(result)
+            });
+        });
     }
 
     group.finish();
@@ -357,14 +367,7 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
     let resolution = Duration::from_secs(60);
     let total_rows = count_rows(batches);
 
-    let chunk_sizes = vec![
-        10_000,
-        50_000,
-        100_000,
-        500_000,
-        1_000_000,
-        5_000_000,
-    ];
+    let chunk_sizes = vec![10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000];
 
     println!("\n=== Chunk Size Impact ===");
     println!("Total rows: {}", total_rows);

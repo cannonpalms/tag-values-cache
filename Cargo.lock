@@ -5274,6 +5274,7 @@ dependencies = [
  "arrow_util",
  "chrono",
  "criterion",
+ "crossbeam-channel",
  "datafusion",
  "futures",
  "indexmap 2.11.4",

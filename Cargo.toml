@@ -7,8 +7,30 @@ edition = "2024"
 name = "scratch"
 path = "src/bin/scratch.rs"
 
+[[bin]]
+name = "generate_cardinality_data"
+path = "src/bin/generate_cardinality_data.rs"
+
+
+[[bin]]
+name = "generate_cardinality_data_streaming"
+path = "src/bin/generate_cardinality_data_streaming.rs"
+
+[[bin]]
+name = "generate_cardinality_data_sequential"
+path = "src/bin/generate_cardinality_data_sequential.rs"
+
+[[bin]]
+name = "generate_cardinality_data_bounded"
+path = "src/bin/generate_cardinality_data_bounded.rs"
+
+[[bin]]
+name = "generate_cardinality_data_mpmc"
+path = "src/bin/generate_cardinality_data_mpmc.rs"
+
 [dependencies]
 arrow = { version = "55.2" }
+crossbeam-channel = "0.5"
 datafusion = "49.0.0"
 indexmap = "2.7"
 interavl = { path = "./interavl" }
