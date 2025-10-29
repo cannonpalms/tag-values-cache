@@ -28,11 +28,12 @@
 mod data_loader;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use futures::{stream, StreamExt};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::{
     BitmapLapperCache, IntervalCache, TagSet, ValueAwareLapperCache,
-    streaming::{BitmapChunkedStreamBuilder, ChunkedStreamBuilder},
+    streaming::{BitmapChunkedStreamBuilder, ChunkedStreamBuilder, SendableRecordBatchStream},
 };
 
 // Global data loaded once and shared across all benchmarks
@@ -76,6 +77,13 @@ fn calculate_cardinality(batches: &[arrow::array::RecordBatch]) -> usize {
     unique.len()
 }
 
+/// Helper to create a stream from in-memory batches
+fn create_stream_from_batches(
+    batches: &'static [arrow::array::RecordBatch],
+) -> SendableRecordBatchStream {
+    stream::iter(batches.iter().map(|b| Ok(b.clone()))).boxed()
+}
+
 /// Benchmark streaming construction for both implementations
 fn bench_streaming_construction(c: &mut Criterion) {
     let batches = match get_batches() {
@@ -100,6 +108,8 @@ fn bench_streaming_construction(c: &mut Criterion) {
     println!("\n=== Streaming Construction ===");
     println!("Total rows: {}, Cardinality: {}", total_rows, cardinality);
 
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     for (name, resolution, chunk_size) in configs {
         println!(
             "\nConfig: {} (resolution={:?}, chunk_size={})",
@@ -110,12 +120,11 @@ fn bench_streaming_construction(c: &mut Criterion) {
             BenchmarkId::new("ValueAwareLapper", name),
             &(resolution, chunk_size),
             |b, (res, cs)| {
-                b.iter(|| {
-                    let mut builder = ChunkedStreamBuilder::new(*res, *cs);
-                    for batch in batches {
-                        builder.process_batch(black_box(batch)).unwrap();
-                    }
-                    let cache = builder.finalize().unwrap();
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = ChunkedStreamBuilder::from_stream(stream, *res, *cs)
+                        .await
+                        .unwrap();
                     black_box(cache)
                 });
             },
@@ -125,12 +134,11 @@ fn bench_streaming_construction(c: &mut Criterion) {
             BenchmarkId::new("BitmapLapper", name),
             &(resolution, chunk_size),
             |b, (res, cs)| {
-                b.iter(|| {
-                    let mut builder = BitmapChunkedStreamBuilder::new(*res, *cs);
-                    for batch in batches {
-                        builder.process_batch(black_box(batch)).unwrap();
-                    }
-                    let cache = builder.finalize().unwrap();
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = BitmapChunkedStreamBuilder::from_stream(stream, *res, *cs)
+                        .await
+                        .unwrap();
                     black_box(cache)
                 });
             },
@@ -150,17 +158,30 @@ fn bench_streaming_queries(c: &mut Criterion) {
     let resolution = Duration::from_secs(60);
     let chunk_size = 1_000_000;
 
-    // Build both caches using streaming
-    let mut value_aware_builder = ChunkedStreamBuilder::new(resolution, chunk_size);
-    let mut bitmap_builder = BitmapChunkedStreamBuilder::new(resolution, chunk_size);
+    // Build both caches using streaming with from_stream
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (value_aware_cache, bitmap_cache) = runtime.block_on(async {
+        let value_aware_stream = create_stream_from_batches(batches);
+        let bitmap_stream = create_stream_from_batches(batches);
 
-    for batch in batches {
-        value_aware_builder.process_batch(batch).unwrap();
-        bitmap_builder.process_batch(batch).unwrap();
-    }
+        let value_aware_cache = ChunkedStreamBuilder::from_stream(
+            value_aware_stream,
+            resolution,
+            chunk_size,
+        )
+        .await
+        .unwrap();
 
-    let value_aware_cache = value_aware_builder.finalize().unwrap();
-    let bitmap_cache = bitmap_builder.finalize().unwrap();
+        let bitmap_cache = BitmapChunkedStreamBuilder::from_stream(
+            bitmap_stream,
+            resolution,
+            chunk_size,
+        )
+        .await
+        .unwrap();
+
+        (value_aware_cache, bitmap_cache)
+    });
 
     println!("\n=== Streaming-Built Cache Comparison ===");
     println!(
@@ -240,17 +261,30 @@ fn bench_streaming_range_queries(c: &mut Criterion) {
     let resolution = Duration::from_secs(60);
     let chunk_size = 1_000_000;
 
-    // Build both caches using streaming
-    let mut value_aware_builder = ChunkedStreamBuilder::new(resolution, chunk_size);
-    let mut bitmap_builder = BitmapChunkedStreamBuilder::new(resolution, chunk_size);
+    // Build both caches using streaming with from_stream
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (value_aware_cache, bitmap_cache) = runtime.block_on(async {
+        let value_aware_stream = create_stream_from_batches(batches);
+        let bitmap_stream = create_stream_from_batches(batches);
 
-    for batch in batches {
-        value_aware_builder.process_batch(batch).unwrap();
-        bitmap_builder.process_batch(batch).unwrap();
-    }
+        let value_aware_cache = ChunkedStreamBuilder::from_stream(
+            value_aware_stream,
+            resolution,
+            chunk_size,
+        )
+        .await
+        .unwrap();
 
-    let value_aware_cache = value_aware_builder.finalize().unwrap();
-    let bitmap_cache = bitmap_builder.finalize().unwrap();
+        let bitmap_cache = BitmapChunkedStreamBuilder::from_stream(
+            bitmap_stream,
+            resolution,
+            chunk_size,
+        )
+        .await
+        .unwrap();
+
+        (value_aware_cache, bitmap_cache)
+    });
 
     // Get timestamp range
     let mut all_timestamps = Vec::new();
@@ -315,16 +349,19 @@ fn bench_streaming_memory(c: &mut Criterion) {
     let resolution = Duration::from_secs(60);
     let chunk_size = 1_000_000;
 
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     let mut group = c.benchmark_group("streaming_memory");
     group.sample_size(10);
 
     group.bench_function("ValueAwareLapper_size", |b| {
-        // Build cache using streaming
-        let mut builder = ChunkedStreamBuilder::new(resolution, chunk_size);
-        for batch in batches {
-            builder.process_batch(batch).unwrap();
-        }
-        let cache = builder.finalize().unwrap();
+        // Build cache using streaming with from_stream
+        let cache = runtime.block_on(async {
+            let stream = create_stream_from_batches(batches);
+            ChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+                .await
+                .unwrap()
+        });
         let size = cache.size_bytes();
 
         println!(
@@ -337,12 +374,13 @@ fn bench_streaming_memory(c: &mut Criterion) {
     });
 
     group.bench_function("BitmapLapper_size", |b| {
-        // Build cache using streaming
-        let mut builder = BitmapChunkedStreamBuilder::new(resolution, chunk_size);
-        for batch in batches {
-            builder.process_batch(batch).unwrap();
-        }
-        let cache = builder.finalize().unwrap();
+        // Build cache using streaming with from_stream
+        let cache = runtime.block_on(async {
+            let stream = create_stream_from_batches(batches);
+            BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+                .await
+                .unwrap()
+        });
         let size = cache.size_bytes();
 
         println!(
@@ -372,6 +410,8 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
     println!("\n=== Chunk Size Impact ===");
     println!("Total rows: {}", total_rows);
 
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     let mut group = c.benchmark_group("chunk_size_impact");
     group.throughput(Throughput::Elements(total_rows as u64));
 
@@ -380,12 +420,11 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
             BenchmarkId::new("ValueAwareLapper", format!("{}K", chunk_size / 1000)),
             chunk_size,
             |b, &cs| {
-                b.iter(|| {
-                    let mut builder = ChunkedStreamBuilder::new(resolution, cs);
-                    for batch in batches {
-                        builder.process_batch(black_box(batch)).unwrap();
-                    }
-                    let cache = builder.finalize().unwrap();
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = ChunkedStreamBuilder::from_stream(stream, resolution, cs)
+                        .await
+                        .unwrap();
                     black_box(cache)
                 });
             },
@@ -395,12 +434,11 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
             BenchmarkId::new("BitmapLapper", format!("{}K", chunk_size / 1000)),
             chunk_size,
             |b, &cs| {
-                b.iter(|| {
-                    let mut builder = BitmapChunkedStreamBuilder::new(resolution, cs);
-                    for batch in batches {
-                        builder.process_batch(black_box(batch)).unwrap();
-                    }
-                    let cache = builder.finalize().unwrap();
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = BitmapChunkedStreamBuilder::from_stream(stream, resolution, cs)
+                        .await
+                        .unwrap();
                     black_box(cache)
                 });
             },
@@ -431,17 +469,18 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     println!("\n=== Streaming vs Batch Comparison ===");
     println!("Total points: {}", all_points.len());
 
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
     let mut group = c.benchmark_group("streaming_vs_batch");
     group.throughput(Throughput::Elements(total_rows as u64));
 
     // ValueAwareLapperCache - Streaming
     group.bench_function("ValueAwareLapper_streaming", |b| {
-        b.iter(|| {
-            let mut builder = ChunkedStreamBuilder::new(resolution, chunk_size);
-            for batch in batches {
-                builder.process_batch(black_box(batch)).unwrap();
-            }
-            let cache = builder.finalize().unwrap();
+        b.to_async(&runtime).iter(|| async {
+            let stream = create_stream_from_batches(batches);
+            let cache = ChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+                .await
+                .unwrap();
             black_box(cache)
         });
     });
@@ -460,12 +499,11 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
 
     // BitmapLapperCache - Streaming
     group.bench_function("BitmapLapper_streaming", |b| {
-        b.iter(|| {
-            let mut builder = BitmapChunkedStreamBuilder::new(resolution, chunk_size);
-            for batch in batches {
-                builder.process_batch(black_box(batch)).unwrap();
-            }
-            let cache = builder.finalize().unwrap();
+        b.to_async(&runtime).iter(|| async {
+            let stream = create_stream_from_batches(batches);
+            let cache = BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+                .await
+                .unwrap();
             black_box(cache)
         });
     });
