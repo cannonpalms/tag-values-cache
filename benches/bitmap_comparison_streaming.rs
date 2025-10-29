@@ -28,7 +28,7 @@
 mod data_loader;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::{
@@ -99,8 +99,6 @@ fn bench_streaming_construction(c: &mut Criterion) {
 
     // Test different resolutions and chunk sizes
     let configs = vec![
-        ("1min_1M", Duration::from_secs(60), 1_000_000),
-        ("1min_100K", Duration::from_secs(60), 100_000),
         ("5min_1M", Duration::from_secs(300), 1_000_000),
         ("1hour_1M", Duration::from_secs(3600), 1_000_000),
     ];
@@ -164,21 +162,15 @@ fn bench_streaming_queries(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let value_aware_cache = ChunkedStreamBuilder::from_stream(
-            value_aware_stream,
-            resolution,
-            chunk_size,
-        )
-        .await
-        .unwrap();
+        let value_aware_cache =
+            ChunkedStreamBuilder::from_stream(value_aware_stream, resolution, chunk_size)
+                .await
+                .unwrap();
 
-        let bitmap_cache = BitmapChunkedStreamBuilder::from_stream(
-            bitmap_stream,
-            resolution,
-            chunk_size,
-        )
-        .await
-        .unwrap();
+        let bitmap_cache =
+            BitmapChunkedStreamBuilder::from_stream(bitmap_stream, resolution, chunk_size)
+                .await
+                .unwrap();
 
         (value_aware_cache, bitmap_cache)
     });
@@ -267,21 +259,15 @@ fn bench_streaming_range_queries(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let value_aware_cache = ChunkedStreamBuilder::from_stream(
-            value_aware_stream,
-            resolution,
-            chunk_size,
-        )
-        .await
-        .unwrap();
+        let value_aware_cache =
+            ChunkedStreamBuilder::from_stream(value_aware_stream, resolution, chunk_size)
+                .await
+                .unwrap();
 
-        let bitmap_cache = BitmapChunkedStreamBuilder::from_stream(
-            bitmap_stream,
-            resolution,
-            chunk_size,
-        )
-        .await
-        .unwrap();
+        let bitmap_cache =
+            BitmapChunkedStreamBuilder::from_stream(bitmap_stream, resolution, chunk_size)
+                .await
+                .unwrap();
 
         (value_aware_cache, bitmap_cache)
     });
@@ -351,45 +337,52 @@ fn bench_streaming_memory(c: &mut Criterion) {
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
+    // Build both caches once and print their sizes
+    let (value_aware_cache, bitmap_cache) = runtime.block_on(async {
+        let value_aware_stream = create_stream_from_batches(batches);
+        let bitmap_stream = create_stream_from_batches(batches);
+
+        let value_aware_cache =
+            ChunkedStreamBuilder::from_stream(value_aware_stream, resolution, chunk_size)
+                .await
+                .unwrap();
+
+        let bitmap_cache =
+            BitmapChunkedStreamBuilder::from_stream(bitmap_stream, resolution, chunk_size)
+                .await
+                .unwrap();
+
+        (value_aware_cache, bitmap_cache)
+    });
+
+    let value_aware_size = value_aware_cache.size_bytes();
+    let bitmap_size = bitmap_cache.size_bytes();
+
+    println!("\n=== Cache Sizes (streaming) ===");
+    println!(
+        "ValueAwareLapperCache: {} bytes ({:.2} MB)",
+        value_aware_size,
+        value_aware_size as f64 / 1_048_576.0
+    );
+    println!(
+        "BitmapLapperCache: {} bytes ({:.2} MB)",
+        bitmap_size,
+        bitmap_size as f64 / 1_048_576.0
+    );
+    println!(
+        "Size reduction: {:.1}x",
+        value_aware_size as f64 / bitmap_size as f64
+    );
+
     let mut group = c.benchmark_group("streaming_memory");
     group.sample_size(10);
 
     group.bench_function("ValueAwareLapper_size", |b| {
-        // Build cache using streaming with from_stream
-        let cache = runtime.block_on(async {
-            let stream = create_stream_from_batches(batches);
-            ChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
-                .await
-                .unwrap()
-        });
-        let size = cache.size_bytes();
-
-        println!(
-            "\nValueAwareLapperCache (streaming) size: {} bytes ({:.2} MB)",
-            size,
-            size as f64 / 1_048_576.0
-        );
-
-        b.iter(|| black_box(cache.size_bytes()));
+        b.iter(|| black_box(value_aware_cache.size_bytes()));
     });
 
     group.bench_function("BitmapLapper_size", |b| {
-        // Build cache using streaming with from_stream
-        let cache = runtime.block_on(async {
-            let stream = create_stream_from_batches(batches);
-            BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
-                .await
-                .unwrap()
-        });
-        let size = cache.size_bytes();
-
-        println!(
-            "BitmapLapperCache (streaming) size: {} bytes ({:.2} MB)",
-            size,
-            size as f64 / 1_048_576.0
-        );
-
-        b.iter(|| black_box(cache.size_bytes()));
+        b.iter(|| black_box(bitmap_cache.size_bytes()));
     });
 
     group.finish();
@@ -405,7 +398,7 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
     let resolution = Duration::from_secs(60);
     let total_rows = count_rows(batches);
 
-    let chunk_sizes = vec![10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000];
+    let chunk_sizes = vec![1_000_000, 5_000_000, 10_000_000];
 
     println!("\n=== Chunk Size Impact ===");
     println!("Total rows: {}", total_rows);
@@ -417,7 +410,7 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
 
     for chunk_size in &chunk_sizes {
         group.bench_with_input(
-            BenchmarkId::new("ValueAwareLapper", format!("{}K", chunk_size / 1000)),
+            BenchmarkId::new("ValueAwareLapper", format!("{}M", chunk_size / 1_000_000)),
             chunk_size,
             |b, &cs| {
                 b.to_async(&runtime).iter(|| async {
@@ -431,7 +424,7 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("BitmapLapper", format!("{}K", chunk_size / 1000)),
+            BenchmarkId::new("BitmapLapper", format!("{}M", chunk_size / 1_000_000)),
             chunk_size,
             |b, &cs| {
                 b.to_async(&runtime).iter(|| async {
