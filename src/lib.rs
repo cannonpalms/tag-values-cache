@@ -851,6 +851,12 @@ const PARALLEL_BATCH_THRESHOLD: usize = 10_000;
 pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> {
     let schema = batch.schema_ref();
 
+    // First pass: check if any field has IOx metadata
+    let has_iox_metadata = schema
+        .fields()
+        .iter()
+        .any(|f| f.metadata().contains_key("iox::column::type"));
+
     // Find the timestamp column and tag columns
     let mut ts_idx = None;
     let mut tag_columns = Vec::new();
@@ -862,7 +868,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
             } else if column_type == "iox::column_type::tag" {
                 // Only include columns explicitly marked as tags
                 match field.data_type() {
-                    DataType::Utf8 | DataType::Dictionary(_, _) => {
+                    DataType::Utf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
                         tag_columns.push((idx, field.name().clone()));
                     }
                     _ => {} // Skip non-string columns
@@ -878,8 +884,17 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                 || name_lower == "eventtime"
             {
                 ts_idx = Some(idx);
+            } else if !has_iox_metadata {
+                // Fallback: If there's no IOx metadata anywhere in the schema,
+                // treat all string columns (except timestamp) as tags
+                match field.data_type() {
+                    DataType::Utf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
+                        tag_columns.push((idx, field.name().clone()));
+                    }
+                    _ => {} // Skip non-string columns
+                }
             }
-            // Skip columns without metadata (don't assume they're tags)
+            // Otherwise skip columns without metadata when IOx metadata exists
         }
     }
 
@@ -916,12 +931,18 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                 for &(col_idx, ref col_name) in &tag_columns {
                     let array = batch.column(col_idx);
 
-                    // Extract value from Utf8 or Dictionary columns only
+                    // Extract value from Utf8, Utf8View, or Dictionary columns only
                     let value = if array.is_valid(row_idx) {
                         match array.data_type() {
                             DataType::Utf8 => array
                                 .as_any()
                                 .downcast_ref::<StringArray>()
+                                .map_or("string_error".to_string(), |arr| {
+                                    arr.value(row_idx).to_string()
+                                }),
+                            DataType::Utf8View => array
+                                .as_any()
+                                .downcast_ref::<arrow::array::StringViewArray>()
                                 .map_or("string_error".to_string(), |arr| {
                                     arr.value(row_idx).to_string()
                                 }),
@@ -936,7 +957,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                                 }
                             }
                             dt => {
-                                // This shouldn't happen since we filter for Utf8/Dictionary columns
+                                // This shouldn't happen since we filter for Utf8/Utf8View/Dictionary columns
                                 panic!("Unexpected data type in tag columns: {dt:?}")
                             }
                         }
@@ -961,12 +982,18 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
             for &(col_idx, ref col_name) in &tag_columns {
                 let array = batch.column(col_idx);
 
-                // Extract value from Utf8 or Dictionary columns only
+                // Extract value from Utf8, Utf8View, or Dictionary columns only
                 let value = if array.is_valid(row_idx) {
                     match array.data_type() {
                         DataType::Utf8 => array
                             .as_any()
                             .downcast_ref::<StringArray>()
+                            .map_or("string_error".to_string(), |arr| {
+                                arr.value(row_idx).to_string()
+                            }),
+                        DataType::Utf8View => array
+                            .as_any()
+                            .downcast_ref::<arrow::array::StringViewArray>()
                             .map_or("string_error".to_string(), |arr| {
                                 arr.value(row_idx).to_string()
                             }),
@@ -981,7 +1008,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                             }
                         }
                         dt => {
-                            // This shouldn't happen since we filter for Utf8/Dictionary columns
+                            // This shouldn't happen since we filter for Utf8/Utf8View/Dictionary columns
                             panic!("Unexpected data type in tag columns: {dt:?}")
                         }
                     }
