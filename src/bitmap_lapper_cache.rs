@@ -258,22 +258,13 @@ impl BitmapLapperCache {
             .par_chunks(chunk_size)
             .map(|chunk| {
                 let mut string_dict = StringDictionary::new();
-                let mut tagsets = Vec::new();
+                let mut tagsets = IndexSet::new();
 
                 let encoded_points: Vec<(Timestamp, usize)> = chunk
                     .iter()
                     .map(|(ts, tagset)| {
                         let encoded = encode_tagset(tagset, &mut string_dict);
-
-                        let tagset_id =
-                            if let Some(pos) = tagsets.iter().position(|t| t == &encoded) {
-                                pos
-                            } else {
-                                let id = tagsets.len();
-                                tagsets.push(encoded);
-                                id
-                            };
-
+                        let (tagset_id, _) = tagsets.insert_full(encoded);
                         (*ts, tagset_id)
                     })
                     .collect();
@@ -393,22 +384,14 @@ impl BitmapLapperCache {
             .par_chunks(chunk_size)
             .map(|chunk| {
                 let mut string_dict = StringDictionary::new();
-                let mut tagsets = Vec::new();
+                let mut tagsets = IndexSet::new();
 
                 let encoded_points: Vec<(Timestamp, usize)> = chunk
                     .iter()
                     .map(|(ts, tagset)| {
                         let encoded = encode_tagset(tagset, &mut string_dict);
 
-                        let tagset_id =
-                            if let Some(pos) = tagsets.iter().position(|t| t == &encoded) {
-                                pos
-                            } else {
-                                let id = tagsets.len();
-                                tagsets.push(encoded);
-                                id
-                            };
-
+                        let (tagset_id, _) = tagsets.insert_full(encoded);
                         (*ts, tagset_id)
                     })
                     .collect();
