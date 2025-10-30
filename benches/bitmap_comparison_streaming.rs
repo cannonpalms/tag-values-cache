@@ -6,23 +6,25 @@
 //!
 //! # Environment Variables
 //!
-//! - `BENCH_INPUT_PATH`: Path to parquet files (default: "benches/data/parquet")
-//! - `BENCH_MAX_ROWS`: Maximum rows to load (default: 100,000)
+//! - `BENCH_INPUT_PATH`: Path to parquet file or directory (default: "benches/data/by-cardinality/1K.parquet")
+//! - `BENCH_MAX_ROWS`: Maximum rows to load (default: no limit)
 //! - `BENCH_MAX_DURATION`: Max time span (default: "1h")
 //! - `BENCH_MAX_CARDINALITY`: Limit unique tag combinations (optional)
 //!
 //! # Examples
 //!
 //! ```bash
-//! # Basic run with defaults
+//! # Run with 1K cardinality (default)
 //! cargo bench --bench bitmap_comparison_streaming
 //!
-//! # Custom data size
-//! BENCH_MAX_ROWS=50000 cargo bench --bench bitmap_comparison_streaming
+//! # Run with 10K cardinality
+//! BENCH_INPUT_PATH=benches/data/by-cardinality/10K.parquet cargo bench --bench bitmap_comparison_streaming
 //!
-//! # Test with high cardinality
-//! BENCH_MAX_ROWS=100000 BENCH_MAX_CARDINALITY=200 \
-//!   cargo bench --bench bitmap_comparison_streaming
+//! # Run with 100K cardinality
+//! BENCH_INPUT_PATH=benches/data/by-cardinality/100K.parquet cargo bench --bench bitmap_comparison_streaming
+//!
+//! # Run with 1M cardinality
+//! BENCH_INPUT_PATH=benches/data/by-cardinality/1M.parquet cargo bench --bench bitmap_comparison_streaming
 //! ```
 
 mod data_loader;
@@ -32,8 +34,11 @@ use futures::{StreamExt, stream};
 use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::{
-    BitmapLapperCache, IntervalCache, TagSet, ValueAwareLapperCache,
-    streaming::{BitmapChunkedStreamBuilder, ChunkedStreamBuilder, SendableRecordBatchStream},
+    BitmapLapperCache, IntervalCache, ValueAwareLapperCache,
+    streaming::{
+        BitmapChunkedStreamBuilder, BitmapSortedStreamBuilder, ChunkedStreamBuilder,
+        SendableRecordBatchStream, SortedStreamBuilder,
+    },
 };
 
 // Global data loaded once and shared across all benchmarks
@@ -41,11 +46,26 @@ static BATCHES: OnceLock<Vec<arrow::array::RecordBatch>> = OnceLock::new();
 
 /// Load RecordBatches once and return a reference to them
 fn get_batches() -> Option<&'static Vec<arrow::array::RecordBatch>> {
-    BATCHES.get_or_init(|| match data_loader::load_record_batches() {
-        Ok(batches) => batches,
-        Err(e) => {
-            eprintln!("Error loading record batches: {}", e);
-            Vec::new()
+    BATCHES.get_or_init(|| {
+        // Set default input path if not specified
+        // SAFETY: This is safe because we're only setting env vars once at initialization
+        // before any benchmarks run, and benchmarks are single-threaded by default.
+        unsafe {
+            if std::env::var("BENCH_INPUT_PATH").is_err() {
+                std::env::set_var("BENCH_INPUT_PATH", "benches/data/by-cardinality/1K.parquet");
+            }
+            // Remove row limit - load entire file
+            if std::env::var("BENCH_MAX_ROWS").is_err() {
+                std::env::set_var("BENCH_MAX_ROWS", "999999999");
+            }
+        }
+
+        match data_loader::load_record_batches() {
+            Ok(batches) => batches,
+            Err(e) => {
+                eprintln!("Error loading record batches: {}", e);
+                Vec::new()
+            }
         }
     });
 
@@ -65,6 +85,7 @@ fn count_rows(batches: &[arrow::array::RecordBatch]) -> usize {
 /// Helper to calculate cardinality from batches
 fn calculate_cardinality(batches: &[arrow::array::RecordBatch]) -> usize {
     use std::collections::HashSet;
+    use tag_values_cache::TagSet;
     let mut unique: HashSet<TagSet> = HashSet::new();
 
     for batch in batches {
@@ -135,6 +156,44 @@ fn bench_streaming_construction(c: &mut Criterion) {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
                     let cache = BitmapChunkedStreamBuilder::from_stream(stream, *res, *cs)
+                        .await
+                        .unwrap();
+                    black_box(cache)
+                });
+            },
+        );
+    }
+
+    // Test sorted builders (no chunk size needed)
+    let sorted_configs = vec![
+        ("5min_sorted", Duration::from_secs(300)),
+        ("1hour_sorted", Duration::from_secs(3600)),
+    ];
+
+    for (name, resolution) in sorted_configs {
+        println!("\nSorted Config: {} (resolution={:?})", name, resolution);
+
+        group.bench_with_input(
+            BenchmarkId::new("ValueAwareLapper_Sorted", name),
+            &resolution,
+            |b, res| {
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = SortedStreamBuilder::from_stream(stream, *res)
+                        .await
+                        .unwrap();
+                    black_box(cache)
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("BitmapLapper_Sorted", name),
+            &resolution,
+            |b, res| {
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = BitmapSortedStreamBuilder::from_stream(stream, *res)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -337,7 +396,7 @@ fn bench_streaming_memory(c: &mut Criterion) {
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
-    // Build both caches once and print their sizes
+    // Build chunked streaming caches
     let (value_aware_cache, bitmap_cache) = runtime.block_on(async {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
@@ -355,34 +414,76 @@ fn bench_streaming_memory(c: &mut Criterion) {
         (value_aware_cache, bitmap_cache)
     });
 
+    // Build sorted streaming caches
+    let (value_aware_sorted_cache, bitmap_sorted_cache) = runtime.block_on(async {
+        let value_aware_stream = create_stream_from_batches(batches);
+        let bitmap_stream = create_stream_from_batches(batches);
+
+        let value_aware_cache = SortedStreamBuilder::from_stream(value_aware_stream, resolution)
+            .await
+            .unwrap();
+
+        let bitmap_cache = BitmapSortedStreamBuilder::from_stream(bitmap_stream, resolution)
+            .await
+            .unwrap();
+
+        (value_aware_cache, bitmap_cache)
+    });
+
     let value_aware_size = value_aware_cache.size_bytes();
     let bitmap_size = bitmap_cache.size_bytes();
+    let value_aware_sorted_size = value_aware_sorted_cache.size_bytes();
+    let bitmap_sorted_size = bitmap_sorted_cache.size_bytes();
 
-    println!("\n=== Cache Sizes (streaming) ===");
+    println!("\n=== Cache Sizes ===");
+    println!("Chunked streaming (chunk_size=1M):");
     println!(
-        "ValueAwareLapperCache: {} bytes ({:.2} MB)",
+        "  ValueAwareLapperCache: {} bytes ({:.2} MB)",
         value_aware_size,
         value_aware_size as f64 / 1_048_576.0
     );
     println!(
-        "BitmapLapperCache: {} bytes ({:.2} MB)",
+        "  BitmapLapperCache: {} bytes ({:.2} MB)",
         bitmap_size,
         bitmap_size as f64 / 1_048_576.0
     );
     println!(
-        "Size reduction: {:.1}x",
+        "  Reduction: {:.1}x",
         value_aware_size as f64 / bitmap_size as f64
+    );
+    println!("\nSorted streaming (single-pass):");
+    println!(
+        "  ValueAwareLapperCache: {} bytes ({:.2} MB)",
+        value_aware_sorted_size,
+        value_aware_sorted_size as f64 / 1_048_576.0
+    );
+    println!(
+        "  BitmapLapperCache: {} bytes ({:.2} MB)",
+        bitmap_sorted_size,
+        bitmap_sorted_size as f64 / 1_048_576.0
+    );
+    println!(
+        "  Reduction: {:.1}x",
+        value_aware_sorted_size as f64 / bitmap_sorted_size as f64
     );
 
     let mut group = c.benchmark_group("streaming_memory");
     group.sample_size(10);
 
-    group.bench_function("ValueAwareLapper_size", |b| {
+    group.bench_function("ValueAwareLapper_chunked", |b| {
         b.iter(|| black_box(value_aware_cache.size_bytes()));
     });
 
-    group.bench_function("BitmapLapper_size", |b| {
+    group.bench_function("BitmapLapper_chunked", |b| {
         b.iter(|| black_box(bitmap_cache.size_bytes()));
+    });
+
+    group.bench_function("ValueAwareLapper_sorted", |b| {
+        b.iter(|| black_box(value_aware_sorted_cache.size_bytes()));
+    });
+
+    group.bench_function("BitmapLapper_sorted", |b| {
+        b.iter(|| black_box(bitmap_sorted_cache.size_bytes()));
     });
 
     group.finish();
@@ -509,6 +610,28 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
                 resolution,
             )
             .unwrap();
+            black_box(cache)
+        });
+    });
+
+    // ValueAwareLapperCache - Sorted Streaming
+    group.bench_function("ValueAwareLapper_sorted_streaming", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let stream = create_stream_from_batches(batches);
+            let cache = SortedStreamBuilder::from_stream(stream, resolution)
+                .await
+                .unwrap();
+            black_box(cache)
+        });
+    });
+
+    // BitmapLapperCache - Sorted Streaming
+    group.bench_function("BitmapLapper_sorted_streaming", |b| {
+        b.to_async(&runtime).iter(|| async {
+            let stream = create_stream_from_batches(batches);
+            let cache = BitmapSortedStreamBuilder::from_stream(stream, resolution)
+                .await
+                .unwrap();
             black_box(cache)
         });
     });
