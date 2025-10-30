@@ -15,6 +15,7 @@ use std::ops::Range;
 use std::time::Duration;
 
 use arrow_util::dictionary::StringDictionary;
+use indexmap::IndexSet;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use rust_lapper::{Interval, Lapper};
@@ -92,13 +93,17 @@ pub struct BitmapLapperCache {
     string_dict: StringDictionary<usize>,
 
     /// Vector of encoded TagSets (index = tagset ID)
-    tagsets: Vec<EncodedTagSet>,
+    tagsets: IndexSet<EncodedTagSet>,
 
     /// Time resolution for bucketing timestamps
     resolution: Duration,
 }
 
 impl BitmapLapperCache {
+    pub fn merge_overlaps(&mut self) {
+        self.lapper.merge_overlaps();
+    }
+
     /// Get statistics about the dictionary encoding
     pub fn dictionary_stats(&self) -> DictionaryStats {
         DictionaryStats {
@@ -119,7 +124,7 @@ impl BitmapLapperCache {
     pub(crate) fn from_parts(
         lapper: Lapper<u64, EqRoaringBitmap>,
         string_dict: StringDictionary<usize>,
-        tagsets: Vec<EncodedTagSet>,
+        tagsets: IndexSet<EncodedTagSet>,
         resolution: Duration,
     ) -> Self {
         Self {
@@ -133,7 +138,7 @@ impl BitmapLapperCache {
     /// Decode a tagset ID to a vector of (&str, &str) pairs
     fn decode_tagset(&self, id: u32) -> Vec<(&str, &str)> {
         self.tagsets
-            .get(id as usize)
+            .get_index(id as usize)
             .map(|encoded| {
                 encoded
                     .iter()
@@ -166,7 +171,7 @@ impl BitmapLapperCache {
         points: Vec<(Timestamp, TagSet)>,
         resolution: Duration,
         string_dict: &mut StringDictionary<usize>,
-        tagsets: &mut Vec<EncodedTagSet>,
+        tagsets: &mut IndexSet<EncodedTagSet>,
     ) -> Result<Vec<Interval<u64, EqRoaringBitmap>>, CacheBuildError> {
         if points.is_empty() {
             return Ok(Vec::new());
@@ -181,17 +186,13 @@ impl BitmapLapperCache {
             // Encode the TagSet
             let encoded = encode_tagset(&tagset, string_dict);
 
-            // Find or create tagset ID
-            let tagset_id = if let Some(pos) = tagsets.iter().position(|t| t == &encoded) {
-                pos as u32
-            } else {
-                let id = tagsets.len() as u32;
-                tagsets.push(encoded);
-                id
-            };
+            let (tagset_id, _) = tagsets.insert_full(encoded);
 
             // Add tagset ID to the bucket's bitmap
-            bucket_map.entry(bucket).or_default().insert(tagset_id);
+            bucket_map
+                .entry(bucket)
+                .or_default()
+                .insert(tagset_id as u32);
         }
 
         // Convert to intervals - ONE per bucket!
@@ -218,7 +219,7 @@ impl BitmapLapperCache {
         let points = sorted_data.into_inner();
 
         let mut string_dict = StringDictionary::new();
-        let mut tagsets = Vec::new();
+        let mut tagsets = IndexSet::new();
 
         let intervals = Self::build_intervals(points, resolution, &mut string_dict, &mut tagsets)?;
 
@@ -244,7 +245,7 @@ impl BitmapLapperCache {
             return Ok(Self {
                 lapper: Lapper::new(vec![]),
                 string_dict: StringDictionary::new(),
-                tagsets: Vec::new(),
+                tagsets: IndexSet::new(),
                 resolution,
             });
         }
@@ -283,7 +284,7 @@ impl BitmapLapperCache {
 
         // Merge dictionaries
         let mut global_dict = StringDictionary::new();
-        let mut global_tagsets = Vec::new();
+        let mut global_tagsets = IndexSet::new();
         let mut id_remappings = Vec::new();
 
         for (_, local_dict, local_tagsets) in &local_results {
@@ -303,14 +304,8 @@ impl BitmapLapperCache {
                     .map(|(key_id, val_id)| (string_id_remap[*key_id], string_id_remap[*val_id]))
                     .collect();
 
-                let global_id =
-                    if let Some(pos) = global_tagsets.iter().position(|t| t == &remapped_tagset) {
-                        pos
-                    } else {
-                        let id = global_tagsets.len();
-                        global_tagsets.push(remapped_tagset);
-                        id
-                    };
+                // Find or create global tagset ID
+                let (global_id, _) = global_tagsets.insert_full(remapped_tagset);
                 tagset_id_remap.push(global_id);
             }
 
@@ -440,14 +435,8 @@ impl BitmapLapperCache {
                     .map(|(key_id, val_id)| (string_id_remap[*key_id], string_id_remap[*val_id]))
                     .collect();
 
-                let global_id =
-                    if let Some(pos) = self.tagsets.iter().position(|t| t == &remapped_tagset) {
-                        pos
-                    } else {
-                        let id = self.tagsets.len();
-                        self.tagsets.push(remapped_tagset);
-                        id
-                    };
+                // Find or create global tagset ID
+                let (global_id, _) = self.tagsets.insert_full(remapped_tagset);
                 tagset_id_remap.push(global_id);
             }
 

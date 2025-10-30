@@ -34,11 +34,12 @@
 
 use arrow::array::RecordBatch;
 use arrow_util::dictionary::StringDictionary;
+use indexmap::IndexSet;
 use std::time::Duration;
 
 use crate::bitmap_lapper_cache::BitmapLapperCache;
 use crate::value_aware_lapper_cache::ValueAwareLapperCache;
-use crate::{CacheBuildError, TagSet, extract_tags_from_batch};
+use crate::{CacheBuildError, EncodedTagSet, TagSet, extract_tags_from_batch};
 
 use arrow::error::ArrowError;
 use futures::StreamExt;
@@ -807,7 +808,9 @@ impl BitmapChunkedStreamBuilder {
 
     pub fn finalize(mut self) -> Result<BitmapLapperCache, CacheBuildError> {
         self.flush_chunk()?;
-        Ok(self.cache.expect("No data was processed - cache is empty"))
+        let mut cache = self.cache.expect("No data was processed - cache is empty");
+        // cache.merge_overlaps();
+        Ok(cache)
     }
 
     pub fn finalize_with_stats(
@@ -863,14 +866,12 @@ pub struct BitmapSortedStreamBuilder {
     string_dict: StringDictionary<usize>,
 
     /// Vector of encoded TagSets (index = ID)
-    tagsets: Vec<crate::EncodedTagSet>,
+    tagsets: IndexSet<EncodedTagSet>,
 
-    /// Currently open buckets: bucketed_timestamp -> RoaringBitmap of tagset IDs
-    open_buckets: std::collections::BTreeMap<u64, roaring::RoaringBitmap>,
-
-    /// Completed intervals
-    completed_intervals:
-        Vec<rust_lapper::Interval<u64, crate::bitmap_lapper_cache::EqRoaringBitmap>>,
+    /// Buckets: bucketed_timestamp -> RoaringBitmap of tagset IDs
+    /// We don't need to track open/closed - just accumulate all buckets and
+    /// convert to intervals at the end. Lapper will handle any merging.
+    buckets: std::collections::BTreeMap<u64, roaring::RoaringBitmap>,
 
     /// Last timestamp processed (for detecting out-of-order data)
     last_timestamp: Option<u64>,
@@ -886,9 +887,8 @@ impl BitmapSortedStreamBuilder {
         Self {
             resolution,
             string_dict: StringDictionary::new(),
-            tagsets: Vec::new(),
-            open_buckets: std::collections::BTreeMap::new(),
-            completed_intervals: Vec::new(),
+            tagsets: IndexSet::new(),
+            buckets: std::collections::BTreeMap::new(),
             last_timestamp: None,
             total_points_processed: 0,
             out_of_order_detected: false,
@@ -915,6 +915,7 @@ impl BitmapSortedStreamBuilder {
         Ok(())
     }
 
+    #[inline]
     fn process_point(&mut self, timestamp: u64, tagset: TagSet) -> Result<(), CacheBuildError> {
         // Check for out-of-order data
         if let Some(last_ts) = self.last_timestamp
@@ -930,65 +931,44 @@ impl BitmapSortedStreamBuilder {
 
         // Encode the tagset
         let encoded_tagset = crate::encode_tagset(&tagset, &mut self.string_dict);
-        let tagset_id = if let Some(pos) = self.tagsets.iter().position(|t| t == &encoded_tagset) {
-            pos as u32
-        } else {
-            let id = self.tagsets.len() as u32;
-            self.tagsets.push(encoded_tagset);
-            id
-        };
+        let (tagset_id, _) = self.tagsets.insert_full(encoded_tagset);
 
-        // Close buckets that are before this one
-        let mut buckets_to_close = Vec::new();
-        for &bucket_ts in self.open_buckets.keys() {
-            if bucket_ts < bucketed_ts {
-                buckets_to_close.push(bucket_ts);
-            } else {
-                break; // BTreeMap is sorted, so we can stop
-            }
-        }
-
-        for bucket_ts in buckets_to_close {
-            if let Some(bitmap) = self.open_buckets.remove(&bucket_ts) {
-                let stop = bucket_ts
-                    .checked_add(1)
-                    .ok_or(CacheBuildError::TimestampOverflow(bucket_ts))?;
-                self.completed_intervals.push(rust_lapper::Interval {
-                    start: bucket_ts,
-                    stop,
-                    val: bitmap.into(),
-                });
-            }
-        }
-
-        // Add tagset to current bucket
-        self.open_buckets
+        // Add tagset to bucket - no need to close old buckets, we'll convert
+        // all buckets to intervals at finalize time
+        self.buckets
             .entry(bucketed_ts)
             .or_default()
-            .insert(tagset_id);
+            .insert(tagset_id as u32);
 
         Ok(())
     }
 
-    pub fn finalize(mut self) -> Result<BitmapLapperCache, CacheBuildError> {
-        // Close all remaining open buckets
-        for (bucket_ts, bitmap) in self.open_buckets.into_iter() {
-            let stop = bucket_ts
-                .checked_add(1)
-                .ok_or(CacheBuildError::TimestampOverflow(bucket_ts))?;
-            self.completed_intervals.push(rust_lapper::Interval {
-                start: bucket_ts,
-                stop,
-                val: bitmap.into(),
-            });
-        }
-
-        if self.completed_intervals.is_empty() {
+    pub fn finalize(self) -> Result<BitmapLapperCache, CacheBuildError> {
+        if self.buckets.is_empty() {
             return Err(CacheBuildError::NoData);
         }
 
-        // Build the lapper from completed intervals
-        let lapper = rust_lapper::Lapper::new(self.completed_intervals);
+        // Convert all buckets to intervals
+        let intervals: Vec<
+            rust_lapper::Interval<u64, crate::bitmap_lapper_cache::EqRoaringBitmap>,
+        > = self
+            .buckets
+            .into_iter()
+            .map(|(bucket_ts, bitmap)| {
+                let stop = bucket_ts
+                    .checked_add(1)
+                    .expect("timestamp overflow when creating interval");
+                rust_lapper::Interval {
+                    start: bucket_ts,
+                    stop,
+                    val: bitmap.into(),
+                }
+            })
+            .collect();
+
+        // Build the lapper - it will handle any necessary merging
+        let mut lapper = rust_lapper::Lapper::new(intervals);
+        // lapper.merge_overlaps();
 
         // Construct the cache
         Ok(BitmapLapperCache::from_parts(
