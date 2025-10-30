@@ -27,7 +27,6 @@ use std::rc::Rc;
 use arrow::array::{Array, StringArray};
 use arrow::array::{RecordBatch, as_dictionary_array, as_primitive_array, as_string_array};
 use arrow::datatypes::{DataType, Int32Type, TimestampNanosecondType};
-use rayon::prelude::*;
 
 pub mod bitmap_lapper_cache;
 pub mod btree_cache;
@@ -831,17 +830,15 @@ pub fn record_batches_to_row_data(
     Ok(SortedData::from_unsorted(all_points))
 }
 
-/// Minimum number of rows in a batch to trigger parallel processing.
-/// Batches smaller than this will be processed sequentially to avoid overhead.
-const PARALLEL_BATCH_THRESHOLD: usize = 10_000;
-
 /// Extract tag data from a RecordBatch as TagSet values.
 ///
 /// This function extracts timestamp and tag columns from an Arrow RecordBatch,
 /// converting each row into a TagSet (set of (tag_name, tag_value) tuples).
 ///
-/// For batches with >= 10,000 rows, this function parallelizes row processing
-/// across multiple CPU cores for better performance.
+/// This implementation is optimized to minimize allocations by:
+/// - Pre-extracting column accessors to avoid repeated type checks and downcasts
+/// - Using &str references from Arrow arrays until the final TagSet insertion
+/// - Processing rows sequentially for better cache locality
 ///
 /// # Arguments
 /// * `batch` - The RecordBatch to extract data from
@@ -859,7 +856,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
 
     // Find the timestamp column and tag columns
     let mut ts_idx = None;
-    let mut tag_columns = Vec::new();
+    let mut tag_column_indices = Vec::new();
 
     for (idx, field) in schema.fields().iter().enumerate() {
         if let Some(column_type) = field.metadata().get("iox::column::type") {
@@ -869,7 +866,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                 // Only include columns explicitly marked as tags
                 match field.data_type() {
                     DataType::Utf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
-                        tag_columns.push((idx, field.name().clone()));
+                        tag_column_indices.push(idx);
                     }
                     _ => {} // Skip non-string columns
                 }
@@ -889,7 +886,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
                 // treat all string columns (except timestamp) as tags
                 match field.data_type() {
                     DataType::Utf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
-                        tag_columns.push((idx, field.name().clone()));
+                        tag_column_indices.push(idx);
                     }
                     _ => {} // Skip non-string columns
                 }
@@ -917,113 +914,94 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
         dt => panic!("Unexpected data type for timestamp column: {dt:?}"),
     };
 
-    let num_rows = batch.num_rows();
+    // Pre-extract column accessors once, outside the row loop
+    // This avoids repeated downcasts and type checks per-row
+    enum ColumnAccessor<'a> {
+        Utf8(&'a StringArray),
+        Utf8View(&'a arrow::array::StringViewArray),
+        Dictionary {
+            keys: &'a arrow::array::Int32Array,
+            values: &'a StringArray,
+        },
+    }
 
-    // For large batches, use parallel processing
-    if num_rows >= PARALLEL_BATCH_THRESHOLD {
-        // Process rows in parallel
-        (0..num_rows)
-            .into_par_iter()
-            .map(|row_idx| {
-                let ts = timestamps_vec[row_idx];
-                let mut tag_set = TagSet::new();
+    let tag_columns: Vec<(&str, ColumnAccessor)> = tag_column_indices
+        .iter()
+        .map(|&col_idx| {
+            let field = &schema.fields()[col_idx];
+            let col_name = field.name().as_str(); // &str reference to schema
+            let array = batch.column(col_idx);
 
-                for &(col_idx, ref col_name) in &tag_columns {
-                    let array = batch.column(col_idx);
-
-                    // Extract value from Utf8, Utf8View, or Dictionary columns only
-                    let value = if array.is_valid(row_idx) {
-                        match array.data_type() {
-                            DataType::Utf8 => array
-                                .as_any()
-                                .downcast_ref::<StringArray>()
-                                .map_or("string_error".to_string(), |arr| {
-                                    arr.value(row_idx).to_string()
-                                }),
-                            DataType::Utf8View => array
-                                .as_any()
-                                .downcast_ref::<arrow::array::StringViewArray>()
-                                .map_or("string_error".to_string(), |arr| {
-                                    arr.value(row_idx).to_string()
-                                }),
-                            DataType::Dictionary(_, _) => {
-                                // Handle dictionary encoded columns (like tags)
-                                let dict_array = as_dictionary_array::<Int32Type>(array);
-                                if let Some(key) = dict_array.key(row_idx) {
-                                    let values = as_string_array(dict_array.values());
-                                    values.value(key).to_string()
-                                } else {
-                                    "null".to_string()
-                                }
-                            }
-                            dt => {
-                                // This shouldn't happen since we filter for Utf8/Utf8View/Dictionary columns
-                                panic!("Unexpected data type in tag columns: {dt:?}")
-                            }
-                        }
-                    } else {
-                        "null".to_string()
-                    };
-
-                    tag_set.insert((col_name.clone(), value));
-                }
-
-                (ts, tag_set)
-            })
-            .collect()
-    } else {
-        // For small batches, use sequential processing to avoid overhead
-        let mut results = Vec::with_capacity(num_rows);
-
-        for (row_idx, ts) in timestamps_vec.iter().enumerate().take(num_rows) {
-            // Collect all tag column values for this row as (name, value) pairs
-            let mut tag_set = TagSet::new();
-
-            for &(col_idx, ref col_name) in &tag_columns {
-                let array = batch.column(col_idx);
-
-                // Extract value from Utf8, Utf8View, or Dictionary columns only
-                let value = if array.is_valid(row_idx) {
-                    match array.data_type() {
-                        DataType::Utf8 => array
-                            .as_any()
-                            .downcast_ref::<StringArray>()
-                            .map_or("string_error".to_string(), |arr| {
-                                arr.value(row_idx).to_string()
-                            }),
-                        DataType::Utf8View => array
-                            .as_any()
-                            .downcast_ref::<arrow::array::StringViewArray>()
-                            .map_or("string_error".to_string(), |arr| {
-                                arr.value(row_idx).to_string()
-                            }),
-                        DataType::Dictionary(_, _) => {
-                            // Handle dictionary encoded columns (like tags)
-                            let dict_array = as_dictionary_array::<Int32Type>(array);
-                            if let Some(key) = dict_array.key(row_idx) {
-                                let values = as_string_array(dict_array.values());
-                                values.value(key).to_string()
-                            } else {
-                                "null".to_string()
-                            }
-                        }
-                        dt => {
-                            // This shouldn't happen since we filter for Utf8/Utf8View/Dictionary columns
-                            panic!("Unexpected data type in tag columns: {dt:?}")
-                        }
+            let accessor = match array.data_type() {
+                DataType::Utf8 => ColumnAccessor::Utf8(as_string_array(array)),
+                DataType::Utf8View => ColumnAccessor::Utf8View(
+                    array
+                        .as_any()
+                        .downcast_ref::<arrow::array::StringViewArray>()
+                        .expect("Failed to downcast to StringViewArray"),
+                ),
+                DataType::Dictionary(_, _) => {
+                    let dict_array = as_dictionary_array::<Int32Type>(array);
+                    ColumnAccessor::Dictionary {
+                        keys: dict_array.keys(),
+                        values: as_string_array(dict_array.values()),
                     }
-                } else {
-                    "null".to_string()
-                };
+                }
+                dt => panic!("Unexpected data type in tag columns: {dt:?}"),
+            };
 
-                tag_set.insert((col_name.clone(), value));
+            (col_name, accessor)
+        })
+        .collect();
+
+    let num_rows = batch.num_rows();
+    let mut results = Vec::with_capacity(num_rows);
+
+    // Sequential processing - simpler and often faster than parallel for this workload
+    // since we've eliminated the per-row overhead
+    for row_idx in 0..num_rows {
+        let ts = timestamps_vec[row_idx];
+        let mut tag_set = TagSet::new();
+
+        for (col_name, accessor) in &tag_columns {
+            // Get &str reference from the array - NO allocation here
+            let value_ref: Option<&str> = match accessor {
+                ColumnAccessor::Utf8(arr) => {
+                    if arr.is_valid(row_idx) {
+                        Some(arr.value(row_idx))
+                    } else {
+                        None
+                    }
+                }
+                ColumnAccessor::Utf8View(arr) => {
+                    if arr.is_valid(row_idx) {
+                        Some(arr.value(row_idx))
+                    } else {
+                        None
+                    }
+                }
+                ColumnAccessor::Dictionary { keys, values } => {
+                    if keys.is_valid(row_idx) {
+                        let key = keys.value(row_idx);
+                        Some(values.value(key as usize))
+                    } else {
+                        None
+                    }
+                }
+            };
+
+            // Only allocate when inserting into TagSet
+            if let Some(value) = value_ref {
+                tag_set.insert((col_name.to_string(), value.to_string()));
+            } else {
+                tag_set.insert((col_name.to_string(), "null".to_string()));
             }
-
-            results.push((*ts, tag_set));
         }
 
-        results
+        results.push((ts, tag_set));
     }
+
+    results
 }
 
 /// Process multiple RecordBatches into sorted TagSet data.
