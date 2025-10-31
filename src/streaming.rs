@@ -479,8 +479,12 @@ impl SortedStreamBuilder {
     /// to ensure timestamps are in ascending order. Use `is_out_of_order()` to detect
     /// violations after processing.
     pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
-        let points = extract_tags_from_batch(batch);
-        self.process_points(points)
+        let encoded_points = crate::extract_and_encode_tags_from_batch(
+            batch,
+            &mut self.string_dict,
+            &mut self.tagsets,
+        );
+        self.process_encoded_points(encoded_points)
     }
 
     /// Processes a vector of (timestamp, TagSet) points directly.
@@ -510,8 +514,29 @@ impl SortedStreamBuilder {
         Ok(())
     }
 
+    /// Process already-encoded points
+    fn process_encoded_points(&mut self, points: Vec<(u64, usize)>) -> Result<(), CacheBuildError> {
+        for (timestamp, tagset_id) in points {
+            self.process_encoded_point(timestamp, tagset_id)?;
+        }
+        Ok(())
+    }
+
     /// Process a single point, updating intervals incrementally.
     fn process_point(&mut self, timestamp: u64, tagset: TagSet) -> Result<(), CacheBuildError> {
+        // Encode the tagset
+        let encoded_tagset = crate::encode_tagset(&tagset, &mut self.string_dict);
+        let (tagset_id, _) = self.tagsets.insert_full(encoded_tagset);
+
+        self.process_encoded_point(timestamp, tagset_id)
+    }
+
+    /// Process a single already-encoded point, updating intervals incrementally.
+    fn process_encoded_point(
+        &mut self,
+        timestamp: u64,
+        tagset_id: usize,
+    ) -> Result<(), CacheBuildError> {
         // Check for out-of-order data
         if let Some(last_ts) = self.last_timestamp
             && timestamp < last_ts
@@ -523,10 +548,6 @@ impl SortedStreamBuilder {
 
         // Bucket the timestamp according to resolution
         let bucketed_ts = ValueAwareLapperCache::bucket_timestamp(timestamp, self.resolution);
-
-        // Encode the tagset
-        let encoded_tagset = crate::encode_tagset(&tagset, &mut self.string_dict);
-        let (tagset_id, _) = self.tagsets.insert_full(encoded_tagset);
 
         let next_end = bucketed_ts
             .checked_add(1)
@@ -808,8 +829,7 @@ impl BitmapChunkedStreamBuilder {
 
     pub fn finalize(mut self) -> Result<BitmapLapperCache, CacheBuildError> {
         self.flush_chunk()?;
-        let mut cache = self.cache.expect("No data was processed - cache is empty");
-        // cache.merge_overlaps();
+        let cache = self.cache.expect("No data was processed - cache is empty");
         Ok(cache)
     }
 
@@ -904,19 +924,27 @@ impl BitmapSortedStreamBuilder {
     }
 
     pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
-        let points = extract_tags_from_batch(batch);
-        self.process_points(points)
+        let encoded_points = crate::extract_and_encode_tags_from_batch(
+            batch,
+            &mut self.string_dict,
+            &mut self.tagsets,
+        );
+        self.process_encoded_points(encoded_points)
     }
 
-    fn process_points(&mut self, points: Vec<(u64, TagSet)>) -> Result<(), CacheBuildError> {
-        for (timestamp, tagset) in points {
-            self.process_point(timestamp, tagset)?;
+    fn process_encoded_points(&mut self, points: Vec<(u64, usize)>) -> Result<(), CacheBuildError> {
+        for (timestamp, tagset_id) in points {
+            self.process_encoded_point(timestamp, tagset_id)?;
         }
         Ok(())
     }
 
     #[inline]
-    fn process_point(&mut self, timestamp: u64, tagset: TagSet) -> Result<(), CacheBuildError> {
+    fn process_encoded_point(
+        &mut self,
+        timestamp: u64,
+        tagset_id: usize,
+    ) -> Result<(), CacheBuildError> {
         // Check for out-of-order data
         if let Some(last_ts) = self.last_timestamp
             && timestamp < last_ts
@@ -928,10 +956,6 @@ impl BitmapSortedStreamBuilder {
 
         // Bucket the timestamp
         let bucketed_ts = BitmapLapperCache::bucket_timestamp(timestamp, self.resolution);
-
-        // Encode the tagset
-        let encoded_tagset = crate::encode_tagset(&tagset, &mut self.string_dict);
-        let (tagset_id, _) = self.tagsets.insert_full(encoded_tagset);
 
         // Add tagset to bucket - no need to close old buckets, we'll convert
         // all buckets to intervals at finalize time
@@ -966,9 +990,8 @@ impl BitmapSortedStreamBuilder {
             })
             .collect();
 
-        // Build the lapper - it will handle any necessary merging
-        let mut lapper = rust_lapper::Lapper::new(intervals);
-        // lapper.merge_overlaps();
+        // Build the lapper
+        let lapper = rust_lapper::Lapper::new(intervals);
 
         // Construct the cache
         Ok(BitmapLapperCache::from_parts(
