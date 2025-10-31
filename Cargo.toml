@@ -69,3 +69,7 @@ harness = false
 [[bench]]
 name = "bitmap_comparison_streaming"
 harness = false
+
+[[bench]]
+name = "tag_values_cache"
+harness = false

@@ -932,11 +932,28 @@ impl BitmapSortedStreamBuilder {
         self.process_encoded_points(encoded_points)
     }
 
+    #[cfg(test)]
+    fn process_points(&mut self, points: Vec<(u64, TagSet)>) -> Result<(), CacheBuildError> {
+        for (timestamp, tagset) in points {
+            self.process_point(timestamp, tagset)?;
+        }
+        Ok(())
+    }
+
     fn process_encoded_points(&mut self, points: Vec<(u64, usize)>) -> Result<(), CacheBuildError> {
         for (timestamp, tagset_id) in points {
             self.process_encoded_point(timestamp, tagset_id)?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn process_point(&mut self, timestamp: u64, tagset: TagSet) -> Result<(), CacheBuildError> {
+        // Encode the tagset
+        let encoded_tagset = crate::encode_tagset(&tagset, &mut self.string_dict);
+        let (tagset_id, _) = self.tagsets.insert_full(encoded_tagset);
+
+        self.process_encoded_point(timestamp, tagset_id)
     }
 
     #[inline]

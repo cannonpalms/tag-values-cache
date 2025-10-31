@@ -1296,3 +1296,26 @@ pub fn record_batches_to_sorted_data(
 
     Ok(SortedData::from_unsorted(all_points))
 }
+
+/// Format bytes in the most appropriate unit (B, KiB, MiB, or GiB) with limited decimal places
+pub fn format_bytes(bytes: usize) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let bytes_f64 = bytes as f64;
+
+    if bytes < 1024 {
+        // Less than 1 KiB - show in bytes
+        format!("{bytes} B")
+    } else if bytes_f64 < MIB {
+        // Less than 1 MiB - show in KiB
+        format!("{:.2} KiB", bytes_f64 / KIB)
+    } else if bytes_f64 < GIB {
+        // Less than 1 GiB - show in MiB
+        format!("{:.2} MiB", bytes_f64 / MIB)
+    } else {
+        // 1 GiB or more - show in GiB
+        format!("{:.2} GiB", bytes_f64 / GIB)
+    }
+}

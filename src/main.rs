@@ -8,7 +8,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
 use tag_values_cache::{
     BTreeCache, IntervalCache, IntervalTreeCache, LapperCache, NCListCache, SortedData, TagSet,
-    UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_tags_from_batch,
+    UnmergedBTreeCache, ValueAwareLapperCache, VecCache, extract_tags_from_batch, format_bytes,
 };
 
 fn print_usage() {
@@ -49,29 +49,6 @@ fn format_duration(duration: Duration) -> String {
     } else {
         // 1 second or more - show in seconds
         format!("{:.2} s", nanos as f64 / 1_000_000_000.0)
-    }
-}
-
-/// Format bytes in the most appropriate unit (B, KiB, MiB, or GiB) with limited decimal places
-fn format_bytes(bytes: usize) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-
-    let bytes_f64 = bytes as f64;
-
-    if bytes < 1024 {
-        // Less than 1 KiB - show in bytes
-        format!("{bytes} B")
-    } else if bytes_f64 < MIB {
-        // Less than 1 MiB - show in KiB
-        format!("{:.2} KiB", bytes_f64 / KIB)
-    } else if bytes_f64 < GIB {
-        // Less than 1 GiB - show in MiB
-        format!("{:.2} MiB", bytes_f64 / MIB)
-    } else {
-        // 1 GiB or more - show in GiB
-        format!("{:.2} GiB", bytes_f64 / GIB)
     }
 }
 
