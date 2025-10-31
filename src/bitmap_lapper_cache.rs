@@ -118,6 +118,19 @@ impl BitmapLapperCache {
         self.tagsets.len()
     }
 
+    /// Returns the minimum timestamp in the cache (start of first interval)
+    pub fn min_timestamp(&self) -> Option<Timestamp> {
+        self.lapper.intervals.first().map(|interval| interval.start)
+    }
+
+    /// Returns the maximum timestamp in the cache (end of last interval bucket)
+    pub fn max_timestamp(&self) -> Option<Timestamp> {
+        self.lapper.intervals.last().map(|interval| {
+            let resolution_ns = self.resolution.as_nanos() as u64;
+            interval.start + resolution_ns
+        })
+    }
+
     /// Construct a cache from pre-built components.
     ///
     /// This is an internal constructor used by streaming builders.

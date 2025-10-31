@@ -172,22 +172,15 @@ fn bench_range_queries(c: &mut Criterion) {
         format_bytes(bitmap_cache.size_bytes())
     );
 
-    // Extract timestamps for queries
-    let mut all_timestamps = Vec::new();
-    for batch in batches {
-        let points = tag_values_cache::extract_tags_from_batch(batch);
-        for (ts, _) in points {
-            all_timestamps.push(ts);
-        }
-    }
-    all_timestamps.sort();
-
-    if all_timestamps.is_empty() {
-        return;
-    }
-
-    let min_ts = all_timestamps[0];
-    let max_ts = all_timestamps[all_timestamps.len() - 1];
+    // Get time range from cache
+    let min_ts = match bitmap_cache.min_timestamp() {
+        Some(ts) => ts,
+        None => return,
+    };
+    let max_ts = match bitmap_cache.max_timestamp() {
+        Some(ts) => ts,
+        None => return,
+    };
 
     // Test 100% range query only
     let range = min_ts..max_ts;
