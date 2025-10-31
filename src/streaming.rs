@@ -35,6 +35,7 @@
 use arrow::array::RecordBatch;
 use arrow_util::dictionary::StringDictionary;
 use indexmap::IndexSet;
+use rayon::prelude::*;
 use std::time::Duration;
 
 use crate::bitmap_lapper_cache::BitmapLapperCache;
@@ -871,6 +872,113 @@ impl BitmapChunkedStreamBuilder {
     }
 }
 
+/// Thread-local builder for parallel batch processing.
+///
+/// This builder maintains its own dictionary and tagset mappings that will be
+/// merged into the global state after processing a batch.
+struct ThreadLocalBitmapBuilder {
+    /// String dictionary for encoding tag keys and values
+    string_dict: StringDictionary<usize>,
+
+    /// Vector of encoded TagSets (index = ID)
+    tagsets: IndexSet<EncodedTagSet>,
+
+    /// Buckets: bucketed_timestamp -> RoaringBitmap of tagset IDs
+    buckets: std::collections::BTreeMap<u64, roaring::RoaringBitmap>,
+
+    /// Statistics
+    total_points: usize,
+}
+
+impl ThreadLocalBitmapBuilder {
+    fn new() -> Self {
+        Self {
+            string_dict: StringDictionary::new(),
+            tagsets: IndexSet::new(),
+            buckets: std::collections::BTreeMap::new(),
+            total_points: 0,
+        }
+    }
+
+    fn process_batch(
+        &mut self,
+        batch: &RecordBatch,
+        resolution: Duration,
+    ) -> Result<(), CacheBuildError> {
+        let encoded_points = crate::extract_and_encode_tags_from_batch(
+            batch,
+            &mut self.string_dict,
+            &mut self.tagsets,
+        );
+
+        self.total_points += encoded_points.len();
+
+        // For large batches, parallelize bucket accumulation
+        // Note: This is safe to call from spawn_blocking context - we're already
+        // on tokio's blocking pool, so rayon can use its own thread pool.
+        const PARALLEL_THRESHOLD: usize = 32_768;
+
+        if encoded_points.len() >= PARALLEL_THRESHOLD {
+            self.process_encoded_points_parallel(encoded_points, resolution);
+        } else {
+            self.process_encoded_points_sequential(encoded_points, resolution);
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn process_encoded_points_sequential(
+        &mut self,
+        encoded_points: Vec<(u64, usize)>,
+        resolution: Duration,
+    ) {
+        for (timestamp, tagset_id) in encoded_points {
+            let bucketed_ts = BitmapLapperCache::bucket_timestamp(timestamp, resolution);
+            self.buckets
+                .entry(bucketed_ts)
+                .or_default()
+                .insert(tagset_id as u32);
+        }
+    }
+
+    fn process_encoded_points_parallel(
+        &mut self,
+        encoded_points: Vec<(u64, usize)>,
+        resolution: Duration,
+    ) {
+        use rayon::prelude::*;
+        use std::collections::BTreeMap;
+
+        // Split points into chunks and process in parallel
+        let num_chunks = rayon::current_num_threads();
+        let chunk_size = (encoded_points.len() / num_chunks).max(1000);
+
+        let local_buckets: Vec<BTreeMap<u64, roaring::RoaringBitmap>> = encoded_points
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut buckets = BTreeMap::new();
+                for &(timestamp, tagset_id) in chunk {
+                    let bucketed_ts = BitmapLapperCache::bucket_timestamp(timestamp, resolution);
+                    buckets
+                        .entry(bucketed_ts)
+                        .or_insert_with(roaring::RoaringBitmap::new)
+                        .insert(tagset_id as u32);
+                }
+                buckets
+            })
+            .collect();
+
+        // Merge local buckets into self.buckets
+        for local_bucket_map in local_buckets {
+            for (bucket_ts, local_bitmap) in local_bucket_map {
+                let global_bitmap = self.buckets.entry(bucket_ts).or_default();
+                *global_bitmap |= local_bitmap;
+            }
+        }
+    }
+}
+
 /// A builder that constructs a `BitmapLapperCache` from streaming data.
 ///
 /// This builder uses the bitmap approach which groups tagsets by time bucket rather than
@@ -1045,6 +1153,162 @@ impl BitmapStreamBuilder {
     ) -> Result<BitmapLapperCache, CacheBuildError> {
         let mut builder = Self::new(resolution);
         builder.process_stream(stream).await?;
+        builder.finalize()
+    }
+
+    /// Merge thread-local builders into this global builder.
+    ///
+    /// This takes thread-local dictionaries and tagsets, remaps them to global IDs,
+    /// and merges the buckets with remapped IDs.
+    fn merge_local_builders(
+        &mut self,
+        local_builders: Vec<ThreadLocalBitmapBuilder>,
+    ) -> Result<(), CacheBuildError> {
+        for local in local_builders {
+            // 1. Merge string dictionary and build ID remap
+            let string_id_remap: Vec<usize> = (0..local.string_dict.values().len())
+                .map(|local_id| {
+                    let string = local.string_dict.lookup_id(local_id).unwrap();
+                    self.string_dict.lookup_value_or_insert(string)
+                })
+                .collect();
+
+            // 2. Merge tagsets with remapped string IDs
+            let tagset_id_remap: Vec<usize> = local
+                .tagsets
+                .iter()
+                .map(|local_tagset| {
+                    let remapped_tagset: EncodedTagSet = local_tagset
+                        .iter()
+                        .map(|(key_id, val_id)| {
+                            (string_id_remap[*key_id], string_id_remap[*val_id])
+                        })
+                        .collect();
+                    let (global_id, _) = self.tagsets.insert_full(remapped_tagset);
+                    global_id
+                })
+                .collect();
+
+            // 3. Merge buckets with remapped tagset IDs
+            for (bucket_ts, local_bitmap) in local.buckets {
+                let global_bitmap = self.buckets.entry(bucket_ts).or_default();
+
+                // Remap and merge bitmap
+                for local_tagset_id in local_bitmap.iter() {
+                    let global_tagset_id = tagset_id_remap[local_tagset_id as usize];
+                    global_bitmap.insert(global_tagset_id as u32);
+                }
+            }
+
+            self.total_points_processed += local.total_points;
+        }
+
+        Ok(())
+    }
+
+    /// Process a buffer of batches in parallel.
+    ///
+    /// Each batch is processed by a thread-local builder, then all thread-local
+    /// builders are merged into the global state.
+    ///
+    /// This uses `tokio::task::spawn_blocking` to run rayon work off the async runtime.
+    async fn process_batch_buffer_parallel(
+        &mut self,
+        batches: Vec<RecordBatch>,
+    ) -> Result<(), CacheBuildError> {
+        let resolution = self.resolution;
+
+        // Run rayon parallel work in spawn_blocking to avoid blocking tokio runtime
+        let local_builders = tokio::task::spawn_blocking(move || {
+            // Process batches in parallel with thread-local builders
+            batches
+                .par_iter()
+                .map(|batch| {
+                    let mut local_builder = ThreadLocalBitmapBuilder::new();
+                    local_builder.process_batch(batch, resolution)?;
+                    Ok(local_builder)
+                })
+                .collect::<Result<Vec<ThreadLocalBitmapBuilder>, CacheBuildError>>()
+        })
+        .await
+        .map_err(|e| CacheBuildError::ArrowError(format!("Task join error: {}", e)))??;
+
+        // Merge thread-local results into self (fast, non-blocking)
+        self.merge_local_builders(local_builders)?;
+
+        Ok(())
+    }
+
+    /// Process stream with parallel batch processing.
+    ///
+    /// Buffers `parallelism` batches at a time and processes them in parallel.
+    /// This can significantly speed up cache construction for large datasets.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - Stream of record batches to process
+    /// * `parallelism` - Number of batches to buffer and process in parallel
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut builder = BitmapStreamBuilder::new(Duration::from_secs(60));
+    /// builder.process_stream_parallel(stream, 4).await?;
+    /// let cache = builder.finalize()?;
+    /// ```
+    pub async fn process_stream_parallel(
+        &mut self,
+        stream: SendableRecordBatchStream,
+        parallelism: usize,
+    ) -> Result<(), CacheBuildError> {
+        let mut stream = stream;
+        let mut batch_buffer = Vec::with_capacity(parallelism);
+
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
+            batch_buffer.push(batch);
+
+            // When buffer is full, process in parallel
+            if batch_buffer.len() >= parallelism {
+                let batches_to_process = std::mem::take(&mut batch_buffer);
+                self.process_batch_buffer_parallel(batches_to_process)
+                    .await?;
+                batch_buffer = Vec::with_capacity(parallelism);
+            }
+        }
+
+        // Process remaining batches
+        if !batch_buffer.is_empty() {
+            self.process_batch_buffer_parallel(batch_buffer).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Convenience method to build a cache from a stream using parallel batch processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - Stream of record batches to process
+    /// * `resolution` - Time resolution for bucketing timestamps
+    /// * `parallelism` - Number of batches to process in parallel (typically 2-8)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let cache = BitmapStreamBuilder::from_stream_parallel(
+    ///     stream,
+    ///     Duration::from_secs(60),
+    ///     4, // Process 4 batches at a time
+    /// ).await?;
+    /// ```
+    pub async fn from_stream_parallel(
+        stream: SendableRecordBatchStream,
+        resolution: Duration,
+        parallelism: usize,
+    ) -> Result<BitmapLapperCache, CacheBuildError> {
+        let mut builder = Self::new(resolution);
+        builder.process_stream_parallel(stream, parallelism).await?;
         builder.finalize()
     }
 }
@@ -2736,6 +3000,136 @@ mod tests {
         assert!(result.is_err());
         if let Err(e) = result {
             assert!(matches!(e, CacheBuildError::NoData));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bitmap_parallel_equals_sequential() {
+        let resolution = Duration::from_nanos(1);
+
+        // Create test data
+        let mut data = vec![];
+        for i in 0..1000 {
+            data.push((
+                i,
+                make_tagset(&[(
+                    "host",
+                    if i % 3 == 0 {
+                        "a"
+                    } else if i % 3 == 1 {
+                        "b"
+                    } else {
+                        "c"
+                    },
+                )]),
+            ));
+        }
+
+        // Build with sequential processing
+        let batch = create_record_batch(&data);
+        let stream_seq = futures::stream::iter(vec![Ok(batch.clone())]).boxed();
+        let cache_seq = super::BitmapStreamBuilder::from_stream(stream_seq, resolution)
+            .await
+            .unwrap();
+
+        // Build with parallel processing
+        let stream_par = futures::stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]).boxed();
+        let cache_par = super::BitmapStreamBuilder::from_stream_parallel(stream_par, resolution, 2)
+            .await
+            .unwrap();
+
+        // Verify interval counts
+        assert_eq!(cache_seq.interval_count(), cache_par.interval_count());
+
+        // Spot check queries
+        for ts in [0, 100, 500, 999] {
+            let seq_results = normalize_bitmap_results(cache_seq.query_point(ts));
+            let par_results = normalize_bitmap_results(cache_par.query_point(ts));
+            assert_eq!(
+                seq_results, par_results,
+                "Results must match for timestamp {}",
+                ts
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bitmap_parallel_high_cardinality() {
+        let resolution = Duration::from_secs(60);
+
+        // Create high cardinality test data - many unique tagsets
+        let mut data = vec![];
+        for i in 0..5000 {
+            let host = format!("host-{}", i % 100);
+            let region = format!("region-{}", i % 50);
+            let az = format!("az-{}", i % 10);
+            data.push((
+                i,
+                make_tagset(&[("host", &host), ("region", &region), ("az", &az)]),
+            ));
+        }
+
+        // Build with parallel processing
+        let batch = create_record_batch(&data);
+        let stream =
+            futures::stream::iter(vec![Ok(batch.clone()), Ok(batch.clone()), Ok(batch)]).boxed();
+
+        let cache = super::BitmapStreamBuilder::from_stream_parallel(stream, resolution, 3)
+            .await
+            .unwrap();
+
+        // Verify cache works
+        assert!(cache.interval_count() > 0);
+
+        // Query some points
+        for ts in [0, 1000, 2500, 4999] {
+            let results = cache.query_point(ts);
+            assert!(
+                !results.is_empty(),
+                "Should have results at timestamp {}",
+                ts
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bitmap_parallel_different_batch_counts() {
+        let resolution = Duration::from_nanos(1);
+
+        let data = vec![
+            (1, make_tagset(&[("host", "a")])),
+            (2, make_tagset(&[("host", "b")])),
+            (3, make_tagset(&[("host", "c")])),
+            (4, make_tagset(&[("host", "d")])),
+        ];
+
+        let batch = create_record_batch(&data);
+
+        // Test with 1 batch (sequential fallback)
+        let stream1 = futures::stream::iter(vec![Ok(batch.clone())]).boxed();
+        let cache1 = super::BitmapStreamBuilder::from_stream_parallel(stream1, resolution, 4)
+            .await
+            .unwrap();
+
+        // Test with 4 batches (full parallel)
+        let stream4 = futures::stream::iter(vec![
+            Ok(batch.clone()),
+            Ok(batch.clone()),
+            Ok(batch.clone()),
+            Ok(batch.clone()),
+        ])
+        .boxed();
+        let cache4 = super::BitmapStreamBuilder::from_stream_parallel(stream4, resolution, 4)
+            .await
+            .unwrap();
+
+        // Both should work correctly
+        assert!(cache1.interval_count() > 0);
+        assert!(cache4.interval_count() > 0);
+
+        for ts in [1, 2, 3, 4] {
+            assert!(!cache1.query_point(ts).is_empty());
+            assert!(!cache4.query_point(ts).is_empty());
         }
     }
 }

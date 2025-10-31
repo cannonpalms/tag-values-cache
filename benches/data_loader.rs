@@ -16,6 +16,7 @@ pub struct BenchConfig {
     pub max_rows: usize,
     pub max_duration_ns: u64,
     pub max_cardinality: Option<usize>,
+    pub record_batch_rows: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -126,12 +127,17 @@ impl BenchConfig {
             .ok()
             .and_then(|s| s.parse().ok());
 
+        let record_batch_rows = std::env::var("BENCH_RECORD_BATCH_ROWS")
+            .ok()
+            .and_then(|s| s.parse().ok());
+
         Self {
             input_path,
             input_type,
             max_rows,
             max_duration_ns,
             max_cardinality,
+            record_batch_rows,
         }
     }
 
@@ -787,6 +793,12 @@ pub fn load_record_batches() -> Result<Vec<arrow::array::RecordBatch>, std::io::
                 format!("Failed to read parquet from {:?}: {}", metadata.path, e),
             )
         })?;
+
+        let builder = if let Some(batch_size) = config.record_batch_rows {
+            builder.with_batch_size(batch_size)
+        } else {
+            builder
+        };
 
         let reader = builder.build().map_err(|e| {
             std::io::Error::new(

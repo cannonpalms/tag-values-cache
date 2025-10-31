@@ -109,8 +109,9 @@ fn bench_cache_build(c: &mut Criterion) {
     let (name, resolution) = config;
     println!("\nConfig: {} (resolution={:?})", name, resolution);
 
+    // Sequential processing
     group.bench_with_input(
-        BenchmarkId::new("BitmapLapper_Sorted", name),
+        BenchmarkId::new("BitmapStream_Sequential", name),
         &resolution,
         |b, res| {
             b.to_async(&runtime).iter(|| async {
@@ -122,6 +123,23 @@ fn bench_cache_build(c: &mut Criterion) {
             });
         },
     );
+
+    // Parallel processing with different parallelism levels
+    for parallelism in [2, 4, 8, rayon::current_num_threads()] {
+        group.bench_with_input(
+            BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
+            &(resolution, parallelism),
+            |b, (res, par)| {
+                b.to_async(&runtime).iter(|| async {
+                    let stream = create_stream_from_batches(batches);
+                    let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
+                        .await
+                        .unwrap();
+                    black_box(cache)
+                });
+            },
+        );
+    }
 
     group.finish();
 }
