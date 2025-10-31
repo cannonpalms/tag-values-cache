@@ -5270,6 +5270,7 @@ dependencies = [
 name = "tag-values-cache"
 version = "0.1.0"
 dependencies = [
+ "ahash",
  "arrow",
  "arrow_util",
  "chrono",
@@ -5286,6 +5287,7 @@ dependencies = [
  "rayon",
  "roaring",
  "rust-lapper",
+ "smallvec",
  "thiserror",
  "tokio",
 ]

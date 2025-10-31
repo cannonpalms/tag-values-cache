@@ -830,22 +830,20 @@ pub fn record_batches_to_row_data(
     Ok(SortedData::from_unsorted(all_points))
 }
 
-/// Extract tag data from a RecordBatch as TagSet values.
-///
-/// This function extracts timestamp and tag columns from an Arrow RecordBatch,
-/// converting each row into a TagSet (set of (tag_name, tag_value) tuples).
-///
-/// This implementation is optimized to minimize allocations by:
-/// - Pre-extracting column accessors to avoid repeated type checks and downcasts
-/// - Using &str references from Arrow arrays until the final TagSet insertion
-/// - Processing rows sequentially for better cache locality
-///
-/// # Arguments
-/// * `batch` - The RecordBatch to extract data from
-///
-/// # Returns
-/// A vector of (timestamp, TagSet) pairs
+use ahash::AHashMap;
+use smallvec::SmallVec;
+
+enum ColAcc<'a> {
+    Utf8(&'a arrow::array::StringArray),
+    Utf8View(&'a arrow::array::StringViewArray),
+    Dict32 {
+        keys: &'a arrow::array::Int32Array,
+        values: &'a arrow::array::StringArray,
+    },
+}
+
 pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> {
+    // … find ts_idx and tag_column_indices …
     let schema = batch.schema_ref();
 
     // First pass: check if any field has IOx metadata
@@ -898,111 +896,293 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
     // panic if no timestamp found
     let ts_idx = ts_idx.expect("No timestamp column found in RecordBatch");
 
-    // Get the timestamp column
-    let ts_column = batch.column(ts_idx);
-    let timestamps_vec: Vec<Timestamp> = match ts_column.data_type() {
-        DataType::Int64 => as_primitive_array::<arrow::datatypes::Int64Type>(ts_column)
-            .values()
-            .iter()
-            .map(|v| *v as u64)
-            .collect(),
-        DataType::Timestamp(_, _) => as_primitive_array::<TimestampNanosecondType>(ts_column)
-            .values()
-            .iter()
-            .map(|v| *v as u64)
-            .collect(),
-        dt => panic!("Unexpected data type for timestamp column: {dt:?}"),
+    // Timestamp accessor (no full copy)
+    enum TsAcc<'a> {
+        I64(&'a arrow::array::Int64Array),
+        TsNs(&'a arrow::array::TimestampNanosecondArray),
+    }
+    let ts_acc = match batch.column(ts_idx).data_type() {
+        DataType::Int64 => TsAcc::I64(arrow::array::as_primitive_array::<
+            arrow::datatypes::Int64Type,
+        >(batch.column(ts_idx))),
+        DataType::Timestamp(_, _) => TsAcc::TsNs(arrow::array::as_primitive_array::<
+            arrow::datatypes::TimestampNanosecondType,
+        >(batch.column(ts_idx))),
+        dt => panic!("bad ts: {dt:?}"),
     };
 
-    // Pre-extract column accessors once, outside the row loop
-    // This avoids repeated downcasts and type checks per-row
-    enum ColumnAccessor<'a> {
-        Utf8(&'a StringArray),
-        Utf8View(&'a arrow::array::StringViewArray),
-        Dictionary {
-            keys: &'a arrow::array::Int32Array,
-            values: &'a StringArray,
-        },
-    }
-
-    let tag_columns: Vec<(&str, ColumnAccessor)> = tag_column_indices
-        .iter()
-        .map(|&col_idx| {
-            let field = &schema.fields()[col_idx];
-            let col_name = field.name().as_str(); // &str reference to schema
-            let array = batch.column(col_idx);
-
-            let accessor = match array.data_type() {
-                DataType::Utf8 => ColumnAccessor::Utf8(as_string_array(array)),
-                DataType::Utf8View => ColumnAccessor::Utf8View(
-                    array
-                        .as_any()
+    // Build column accessors + intern column names once (Rc<str>)
+    let mut tag_cols: Vec<(Rc<str>, ColAcc)> = tag_column_indices
+        .into_iter()
+        .map(|i| {
+            let field = schema.field(i);
+            let name_rc: Rc<str> = Rc::from(field.name().as_str()); // 1 alloc per column
+            let arr = batch.column(i);
+            let acc = match arr.data_type() {
+                DataType::Utf8 => ColAcc::Utf8(arrow::array::as_string_array(arr)),
+                DataType::Utf8View => ColAcc::Utf8View(
+                    arr.as_any()
                         .downcast_ref::<arrow::array::StringViewArray>()
-                        .expect("Failed to downcast to StringViewArray"),
+                        .unwrap(),
                 ),
                 DataType::Dictionary(_, _) => {
-                    let dict_array = as_dictionary_array::<Int32Type>(array);
-                    ColumnAccessor::Dictionary {
-                        keys: dict_array.keys(),
-                        values: as_string_array(dict_array.values()),
+                    let dict =
+                        arrow::array::as_dictionary_array::<arrow::datatypes::Int32Type>(arr);
+                    ColAcc::Dict32 {
+                        keys: dict.keys(),
+                        values: arrow::array::as_string_array(dict.values()),
                     }
                 }
-                dt => panic!("Unexpected data type in tag columns: {dt:?}"),
+                dt => panic!("unexpected tag type: {dt:?}"),
             };
+            (name_rc, acc)
+        })
+        .collect();
 
-            (col_name, accessor)
+    // Ensure deterministic order without BTreeSet work per row
+    tag_cols.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+
+    // Per-column interners: &str -> Rc<str>, so each unique value allocates once per column
+    struct ValIntern<'a> {
+        map: AHashMap<&'a str, Rc<str>>,
+    }
+    let mut interner: Vec<ValIntern> = tag_cols
+        .iter()
+        .map(|_| ValIntern {
+            map: AHashMap::default(),
         })
         .collect();
 
     let num_rows = batch.num_rows();
-    let mut results = Vec::with_capacity(num_rows);
+    let mut out = Vec::with_capacity(num_rows);
 
-    // Sequential processing - simpler and often faster than parallel for this workload
-    // since we've eliminated the per-row overhead
-    for row_idx in 0..num_rows {
-        let ts = timestamps_vec[row_idx];
-        let mut tag_set = TagSet::new();
+    for row in 0..num_rows {
+        // timestamp on demand
+        let ts = match ts_acc {
+            TsAcc::I64(a) => a.value(row) as u64,
+            TsAcc::TsNs(a) => a.value(row) as u64,
+        };
 
-        for (col_name, accessor) in &tag_columns {
-            // Get &str reference from the array - NO allocation here
-            let value_ref: Option<&str> = match accessor {
-                ColumnAccessor::Utf8(arr) => {
-                    if arr.is_valid(row_idx) {
-                        Some(arr.value(row_idx))
-                    } else {
-                        None
-                    }
-                }
-                ColumnAccessor::Utf8View(arr) => {
-                    if arr.is_valid(row_idx) {
-                        Some(arr.value(row_idx))
-                    } else {
-                        None
-                    }
-                }
-                ColumnAccessor::Dictionary { keys, values } => {
-                    if keys.is_valid(row_idx) {
-                        let key = keys.value(row_idx);
-                        Some(values.value(key as usize))
+        // build small, already-ordered vector of pairs
+        let mut pairs: SmallVec<[(Rc<str>, Rc<str>); 16]> =
+            SmallVec::with_capacity(tag_cols.len());
+
+        for (col_idx, (col_name, acc)) in tag_cols.iter().enumerate() {
+            let s_opt: Option<&str> = match acc {
+                ColAcc::Utf8(a) => a.is_valid(row).then(|| a.value(row)),
+                ColAcc::Utf8View(a) => a.is_valid(row).then(|| a.value(row)),
+                ColAcc::Dict32 { keys, values } => {
+                    if keys.is_valid(row) {
+                        Some(values.value(keys.value(row) as usize))
                     } else {
                         None
                     }
                 }
             };
 
-            // Only allocate when inserting into TagSet
-            if let Some(value) = value_ref {
-                tag_set.insert((col_name.to_string(), value.to_string()));
-            } else {
-                tag_set.insert((col_name.to_string(), "null".to_string()));
-            }
+            let v_rc = match s_opt {
+                Some(s) => {
+                    // intern per column
+                    if let Some(existing) = interner[col_idx].map.get(s) {
+                        existing.clone()
+                    } else {
+                        let owned = Rc::<str>::from(s);
+                        interner[col_idx].map.insert(s, owned.clone());
+                        owned
+                    }
+                }
+                None => Rc::<str>::from("null"),
+            };
+
+            pairs.push((col_name.clone(), v_rc));
         }
 
-        results.push((ts, tag_set));
+        // If you must return TagSet = BTreeSet<(String, String)>, convert here:
+        let mut ts_set: TagSet = BTreeSet::new();
+        // Pushing in name-sorted order; conversion still allocates, but only once per unique string thanks to interning.
+        for (k, v) in pairs {
+            ts_set.insert((k.as_ref().to_owned(), v.as_ref().to_owned()));
+        }
+
+        out.push((ts, ts_set));
     }
 
-    results
+    out
 }
+
+// /// Extract tag data from a RecordBatch as TagSet values.
+// ///
+// /// This function extracts timestamp and tag columns from an Arrow RecordBatch,
+// /// converting each row into a TagSet (set of (tag_name, tag_value) tuples).
+// ///
+// /// This implementation is optimized to minimize allocations by:
+// /// - Pre-extracting column accessors to avoid repeated type checks and downcasts
+// /// - Using &str references from Arrow arrays until the final TagSet insertion
+// /// - Processing rows sequentially for better cache locality
+// ///
+// /// # Arguments
+// /// * `batch` - The RecordBatch to extract data from
+// ///
+// /// # Returns
+// /// A vector of (timestamp, TagSet) pairs
+// pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> {
+//     let schema = batch.schema_ref();
+//
+//     // First pass: check if any field has IOx metadata
+//     let has_iox_metadata = schema
+//         .fields()
+//         .iter()
+//         .any(|f| f.metadata().contains_key("iox::column::type"));
+//
+//     // Find the timestamp column and tag columns
+//     let mut ts_idx = None;
+//     let mut tag_column_indices = Vec::new();
+//
+//     for (idx, field) in schema.fields().iter().enumerate() {
+//         if let Some(column_type) = field.metadata().get("iox::column::type") {
+//             if column_type == "iox::column_type::timestamp" {
+//                 ts_idx = Some(idx);
+//             } else if column_type == "iox::column_type::tag" {
+//                 // Only include columns explicitly marked as tags
+//                 match field.data_type() {
+//                     DataType::Utf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
+//                         tag_column_indices.push(idx);
+//                     }
+//                     _ => {} // Skip non-string columns
+//                 }
+//             }
+//             // Skip other column types (fields, etc.)
+//         } else {
+//             // If no metadata, check field name for time column
+//             let name_lower = field.name().to_lowercase();
+//             if name_lower == "time"
+//                 || name_lower == "timestamp"
+//                 || name_lower == "_time"
+//                 || name_lower == "eventtime"
+//             {
+//                 ts_idx = Some(idx);
+//             } else if !has_iox_metadata {
+//                 // Fallback: If there's no IOx metadata anywhere in the schema,
+//                 // treat all string columns (except timestamp) as tags
+//                 match field.data_type() {
+//                     DataType::Utf8 | DataType::Utf8View | DataType::Dictionary(_, _) => {
+//                         tag_column_indices.push(idx);
+//                     }
+//                     _ => {} // Skip non-string columns
+//                 }
+//             }
+//             // Otherwise skip columns without metadata when IOx metadata exists
+//         }
+//     }
+//
+//     // panic if no timestamp found
+//     let ts_idx = ts_idx.expect("No timestamp column found in RecordBatch");
+//
+//     // Get the timestamp column
+//     let ts_column = batch.column(ts_idx);
+//     let timestamps_vec: Vec<Timestamp> = match ts_column.data_type() {
+//         DataType::Int64 => as_primitive_array::<arrow::datatypes::Int64Type>(ts_column)
+//             .values()
+//             .iter()
+//             .map(|v| *v as u64)
+//             .collect(),
+//         DataType::Timestamp(_, _) => as_primitive_array::<TimestampNanosecondType>(ts_column)
+//             .values()
+//             .iter()
+//             .map(|v| *v as u64)
+//             .collect(),
+//         dt => panic!("Unexpected data type for timestamp column: {dt:?}"),
+//     };
+//
+//     // Pre-extract column accessors once, outside the row loop
+//     // This avoids repeated downcasts and type checks per-row
+//     enum ColumnAccessor<'a> {
+//         Utf8(&'a StringArray),
+//         Utf8View(&'a arrow::array::StringViewArray),
+//         Dictionary {
+//             keys: &'a arrow::array::Int32Array,
+//             values: &'a StringArray,
+//         },
+//     }
+//
+//     let tag_columns: Vec<(&str, ColumnAccessor)> = tag_column_indices
+//         .iter()
+//         .map(|&col_idx| {
+//             let field = &schema.fields()[col_idx];
+//             let col_name = field.name().as_str(); // &str reference to schema
+//             let array = batch.column(col_idx);
+//
+//             let accessor = match array.data_type() {
+//                 DataType::Utf8 => ColumnAccessor::Utf8(as_string_array(array)),
+//                 DataType::Utf8View => ColumnAccessor::Utf8View(
+//                     array
+//                         .as_any()
+//                         .downcast_ref::<arrow::array::StringViewArray>()
+//                         .expect("Failed to downcast to StringViewArray"),
+//                 ),
+//                 DataType::Dictionary(_, _) => {
+//                     let dict_array = as_dictionary_array::<Int32Type>(array);
+//                     ColumnAccessor::Dictionary {
+//                         keys: dict_array.keys(),
+//                         values: as_string_array(dict_array.values()),
+//                     }
+//                 }
+//                 dt => panic!("Unexpected data type in tag columns: {dt:?}"),
+//             };
+//
+//             (col_name, accessor)
+//         })
+//         .collect();
+//
+//     let num_rows = batch.num_rows();
+//     let mut results = Vec::with_capacity(num_rows);
+//
+//     // Sequential processing - simpler and often faster than parallel for this workload
+//     // since we've eliminated the per-row overhead
+//     for row_idx in 0..num_rows {
+//         let ts = timestamps_vec[row_idx];
+//         let mut tag_set = TagSet::new();
+//
+//         for (col_name, accessor) in &tag_columns {
+//             // Get &str reference from the array - NO allocation here
+//             let value_ref: Option<&str> = match accessor {
+//                 ColumnAccessor::Utf8(arr) => {
+//                     if arr.is_valid(row_idx) {
+//                         Some(arr.value(row_idx))
+//                     } else {
+//                         None
+//                     }
+//                 }
+//                 ColumnAccessor::Utf8View(arr) => {
+//                     if arr.is_valid(row_idx) {
+//                         Some(arr.value(row_idx))
+//                     } else {
+//                         None
+//                     }
+//                 }
+//                 ColumnAccessor::Dictionary { keys, values } => {
+//                     if keys.is_valid(row_idx) {
+//                         let key = keys.value(row_idx);
+//                         Some(values.value(key as usize))
+//                     } else {
+//                         None
+//                     }
+//                 }
+//             };
+//
+//             // Only allocate when inserting into TagSet
+//             if let Some(value) = value_ref {
+//                 tag_set.insert((col_name.to_string(), value.to_string()));
+//             } else {
+//                 tag_set.insert((col_name.to_string(), "null".to_string()));
+//             }
+//         }
+//
+//         results.push((ts, tag_set));
+//     }
+//
+//     results
+// }
 
 /// Process multiple RecordBatches into sorted TagSet data.
 ///
