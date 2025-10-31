@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(input_path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let old_schema = builder.schema().clone();
-    let mut reader = builder.build()?;
+    let reader = builder.build()?;
 
     println!("Original schema:");
     for field in old_schema.fields() {
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut all_batches = Vec::new();
     let mut total_rows = 0;
 
-    while let Some(batch_result) = reader.next() {
+    for batch_result in reader {
         let batch = batch_result?;
         total_rows += batch.num_rows();
         all_batches.push(batch);

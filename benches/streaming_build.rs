@@ -109,10 +109,7 @@ fn adapt_datafusion_stream(
                         Ok(batch)
                     } else {
                         Err(ArrowError::from_external_error(Box::new(
-                            std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "Failed to convert batch",
-                            ),
+                            std::io::Error::other("Failed to convert batch"),
                         )))
                     }
                 }
@@ -202,13 +199,13 @@ async fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io:
     // Register the parquet file
     ctx.register_parquet("data", parquet_file.to_str().unwrap(), parquet_options)
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     // First, get the schema to understand the columns
     let test_df = ctx
         .sql("SELECT * FROM data LIMIT 1")
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     let schema = test_df.schema();
 
@@ -219,10 +216,10 @@ async fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io:
         .iter()
         .find(|f| {
             // Check metadata first (IOx pattern)
-            if let Some(column_type) = f.metadata().get("iox::column::type") {
-                if column_type == "iox::column_type::timestamp" {
-                    return true;
-                }
+            if let Some(column_type) = f.metadata().get("iox::column::type")
+                && column_type == "iox::column_type::timestamp"
+            {
+                return true;
             }
             // Fallback to name-based detection
             let name_lower = f.name().to_lowercase();
@@ -259,16 +256,10 @@ async fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io:
     );
 
     // Execute the query
-    let df = ctx
-        .sql(&query)
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let df = ctx.sql(&query).await.map_err(std::io::Error::other)?;
 
     // Get the stream of record batches from DataFusion
-    let df_stream = df
-        .execute_stream()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let df_stream = df.execute_stream().await.map_err(std::io::Error::other)?;
 
     // Convert DataFusion's stream to our Arrow stream type
     Ok(adapt_datafusion_stream(df_stream))

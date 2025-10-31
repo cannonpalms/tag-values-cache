@@ -58,19 +58,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             last_ts = Some(timestamp);
 
-            if let Some(prev) = prev_timestamp {
-                if timestamp < prev {
-                    is_sorted = false;
-                    if first_violation_idx.is_none() {
-                        first_violation_idx = Some(row_idx);
-                        println!(
-                            "First violation at row {}: prev={}, current={}",
-                            row_idx, prev, timestamp
-                        );
-                        println!("  Difference: {} ns", prev - timestamp);
-                    }
-                    break;
+            if let Some(prev) = prev_timestamp
+                && timestamp < prev
+            {
+                is_sorted = false;
+                if first_violation_idx.is_none() {
+                    first_violation_idx = Some(row_idx);
+                    println!(
+                        "First violation at row {}: prev={}, current={}",
+                        row_idx, prev, timestamp
+                    );
+                    println!("  Difference: {} ns", prev - timestamp);
                 }
+                break;
             }
 
             prev_timestamp = Some(timestamp);

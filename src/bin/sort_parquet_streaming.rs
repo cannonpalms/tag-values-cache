@@ -1,5 +1,5 @@
-///! Memory-efficient parquet sorting using streaming approach
-///! Sorts data by timestamp column and converts Int64 to Timestamp type
+//! Memory-efficient parquet sorting using streaming approach
+//! Sorts data by timestamp column and converts Int64 to Timestamp type
 use arrow::array::{ArrayRef, RecordBatch};
 use arrow::compute::{self, SortOptions};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(input_path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let old_schema = builder.schema().clone();
-    let mut reader = builder.build()?;
+    let reader = builder.build()?;
 
     println!("Original schema:");
     for field in old_schema.fields() {
@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nReading and sorting data...");
 
-    while let Some(batch_result) = reader.next() {
+    for batch_result in reader {
         let batch = batch_result?;
         let batch_rows = batch.num_rows();
         current_batch_group.push(batch);

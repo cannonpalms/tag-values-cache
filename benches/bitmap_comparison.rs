@@ -71,7 +71,7 @@ fn calculate_bucket_count(data: &[(u64, TagSet)], resolution: Duration) -> usize
     let max_ts = data.iter().map(|(ts, _)| *ts).max().unwrap();
     let duration_ns = max_ts - min_ts;
     let resolution_ns = resolution.as_nanos() as u64;
-    ((duration_ns + resolution_ns - 1) / resolution_ns) as usize
+    duration_ns.div_ceil(resolution_ns) as usize
 }
 
 /// Benchmark cache construction for both implementations
@@ -177,7 +177,7 @@ fn bench_point_queries(c: &mut Criterion) {
     );
 
     // Test queries at different timestamps
-    let timestamps = vec![
+    let timestamps = [
         data[0].0,                  // First
         data[data.len() / 2].0,     // Middle
         data[data.len() - 1].0,     // Last

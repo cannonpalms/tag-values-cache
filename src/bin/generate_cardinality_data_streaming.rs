@@ -34,9 +34,9 @@ fn factorize_cardinality(total_cardinality: usize, num_columns: usize) -> Vec<us
         let target = target.max(2);
 
         let mut best = target;
-        if remaining % target != 0 {
+        if !remaining.is_multiple_of(target) {
             for candidate in (2..=target + 5).rev() {
-                if candidate <= remaining && remaining % candidate == 0 {
+                if candidate <= remaining && remaining.is_multiple_of(candidate) {
                     best = candidate;
                     break;
                 }
@@ -92,7 +92,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         .collect();
 
     // Time parameters
-    let start_ns: i64 = 1704067200_000_000_000; // 2024-01-01 00:00:00 UTC
+    let start_ns: i64 = 1704067200000000000; // 2024-01-01 00:00:00 UTC
     let interval_ns: i64 = 15_000_000_000; // 15 seconds
     let points_per_tagset = 5760; // 24 hours * 3600 / 15
 
@@ -131,8 +131,8 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         .set_statistics_enabled(parquet::file::properties::EnabledStatistics::Page)
         .build();
 
-    let writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let writer =
+        ArrowWriter::try_new(file, schema.clone(), Some(props)).map_err(std::io::Error::other)?;
 
     let writer = Arc::new(Mutex::new(writer));
     let rows_written = Arc::new(Mutex::new(0usize));
@@ -151,7 +151,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
     println!("  Streaming data generation with parallel processing...");
     println!("  Using chunk size: {} tagsets", tagsets_per_chunk);
 
-    let num_chunks = (cardinality + tagsets_per_chunk - 1) / tagsets_per_chunk;
+    let num_chunks = cardinality.div_ceil(tagsets_per_chunk);
 
     // Process chunks in batches to control memory usage
     // Process up to 24 chunks in parallel at a time
@@ -210,7 +210,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
                             arrays.extend(tag_arrays);
 
                             let batch = RecordBatch::try_new(schema.clone(), arrays)
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                                .map_err(std::io::Error::other)
                                 .unwrap();
 
                             batches.push(batch);
@@ -236,7 +236,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
                     arrays.extend(tag_arrays);
 
                     let batch = RecordBatch::try_new(schema.clone(), arrays)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                        .map_err(std::io::Error::other)
                         .unwrap();
 
                     batches.push(batch);
@@ -268,12 +268,10 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
 
     // Close writer - need to extract it from the Arc<Mutex> since close() consumes it
     let writer = Arc::try_unwrap(writer)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Failed to unwrap writer"))?
+        .map_err(|_| std::io::Error::other("Failed to unwrap writer"))?
         .into_inner()
         .unwrap();
-    writer
-        .close()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    writer.close().map_err(std::io::Error::other)?;
 
     let file_size = std::fs::metadata(&output_path)?.len();
     let elapsed = start_time.elapsed();

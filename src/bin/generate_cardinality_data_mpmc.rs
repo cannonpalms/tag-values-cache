@@ -2,23 +2,18 @@ use arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use parquet::arrow::async_writer::AsyncArrowWriter;
 use parquet::file::properties::WriterProperties;
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::thread;
 use std::time::Instant;
 use tokio::fs::File;
+use tokio::sync::Mutex;
 
 fn factorize_cardinality(total_cardinality: usize, num_columns: usize) -> Vec<usize> {
     if total_cardinality == 1 {
         return vec![1; num_columns];
     }
-
-    let base = (total_cardinality as f64)
-        .powf(1.0 / num_columns as f64)
-        .round() as usize;
-    let base = base.max(2);
 
     let mut cardinalities = Vec::new();
     let mut remaining = total_cardinality;
@@ -35,9 +30,9 @@ fn factorize_cardinality(total_cardinality: usize, num_columns: usize) -> Vec<us
         let target = target.max(2);
 
         let mut best = target;
-        if remaining % target != 0 {
+        if !remaining.is_multiple_of(target) {
             for candidate in (2..=target + 5).rev() {
-                if candidate <= remaining && remaining % candidate == 0 {
+                if candidate <= remaining && remaining.is_multiple_of(candidate) {
                     best = candidate;
                     break;
                 }
@@ -92,7 +87,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         tag_cardinalities, product
     );
 
-    let start_ns: i64 = 1704067200_000_000_000;
+    let start_ns: i64 = 1704067200000000000;
     let interval_ns: i64 = 15_000_000_000;
     let points_per_tagset = 5760;
 
@@ -148,8 +143,8 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
     let (tx, rx) = crossbeam_channel::bounded::<Option<RecordBatch>>(CHANNEL_CAPACITY);
 
     // Shared progress counter
-    let progress = Arc::new(Mutex::new(0usize));
-    let total_written = Arc::new(Mutex::new(0usize));
+    let progress = Arc::new(StdMutex::new(0usize));
+    let total_written = Arc::new(StdMutex::new(0usize));
 
     // Clone for producers
     let schema_prod = schema.clone();
@@ -266,7 +261,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         .worker_threads(NUM_WRITERS)
         .enable_all()
         .build()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     // Use runtime to create async writer
     let writer = runtime.block_on(async {
@@ -277,8 +272,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
             .set_statistics_enabled(parquet::file::properties::EnabledStatistics::Page)
             .build();
 
-        AsyncArrowWriter::try_new(file, schema.clone(), Some(props))
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        AsyncArrowWriter::try_new(file, schema.clone(), Some(props)).map_err(std::io::Error::other)
     })?;
 
     let writer = Arc::new(Mutex::new(Some(writer)));
@@ -300,7 +294,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
 
                         // Write batch asynchronously
                         {
-                            let mut w_guard = writer.lock().unwrap();
+                            let mut w_guard = writer.lock().await;
                             if let Some(ref mut w) = *w_guard {
                                 w.write(&batch).await.expect("Failed to write batch");
                             }
@@ -330,14 +324,13 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
     }
 
     // Close the writer asynchronously
-    let mut w_guard = writer.lock().unwrap();
-    if let Some(w) = w_guard.take() {
-        drop(w_guard); // Release lock before async operation
-        runtime.block_on(async {
-            w.close()
-                .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-        })?;
+    let writer_opt = runtime.block_on(async {
+        let mut w_guard = writer.lock().await;
+        w_guard.take()
+    });
+
+    if let Some(w) = writer_opt {
+        runtime.block_on(async { w.close().await.map_err(std::io::Error::other) })?;
     }
 
     let file_size = std::fs::metadata(&output_path)?.len();

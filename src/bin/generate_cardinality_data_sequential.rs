@@ -13,11 +13,6 @@ fn factorize_cardinality(total_cardinality: usize, num_columns: usize) -> Vec<us
         return vec![1; num_columns];
     }
 
-    let base = (total_cardinality as f64)
-        .powf(1.0 / num_columns as f64)
-        .round() as usize;
-    let base = base.max(2);
-
     let mut cardinalities = Vec::new();
     let mut remaining = total_cardinality;
 
@@ -33,9 +28,9 @@ fn factorize_cardinality(total_cardinality: usize, num_columns: usize) -> Vec<us
         let target = target.max(2);
 
         let mut best = target;
-        if remaining % target != 0 {
+        if !remaining.is_multiple_of(target) {
             for candidate in (2..=target + 5).rev() {
-                if candidate <= remaining && remaining % candidate == 0 {
+                if candidate <= remaining && remaining.is_multiple_of(candidate) {
                     best = candidate;
                     break;
                 }
@@ -92,7 +87,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         tag_cardinalities, product
     );
 
-    let start_ns: i64 = 1704067200_000_000_000;
+    let start_ns: i64 = 1704067200000000000;
     let interval_ns: i64 = 15_000_000_000;
     let points_per_tagset = 5760;
 
@@ -131,8 +126,8 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         .set_statistics_enabled(parquet::file::properties::EnabledStatistics::Page)
         .build();
 
-    let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let mut writer =
+        ArrowWriter::try_new(file, schema.clone(), Some(props)).map_err(std::io::Error::other)?;
 
     const ROWS_PER_BATCH: usize = 100_000;
     let mut total_rows_written = 0;
@@ -188,9 +183,7 @@ fn generate_parquet_file(cardinality: usize, output_path: PathBuf) -> std::io::R
         total_rows_written += timestamps.len();
     }
 
-    writer
-        .close()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    writer.close().map_err(std::io::Error::other)?;
 
     let file_size = std::fs::metadata(&output_path)?.len();
     let elapsed = start_time.elapsed();
@@ -226,12 +219,9 @@ fn write_batch(
     let mut arrays = vec![time_array];
     arrays.extend(tag_arrays);
 
-    let batch = RecordBatch::try_new(schema.clone(), arrays)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let batch = RecordBatch::try_new(schema.clone(), arrays).map_err(std::io::Error::other)?;
 
-    writer
-        .write(&batch)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    writer.write(&batch).map_err(std::io::Error::other)?;
 
     Ok(())
 }
