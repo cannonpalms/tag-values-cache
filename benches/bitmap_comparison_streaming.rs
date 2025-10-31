@@ -36,7 +36,7 @@ use std::time::Duration;
 use tag_values_cache::{
     BitmapLapperCache, IntervalCache, ValueAwareLapperCache,
     streaming::{
-        BitmapChunkedStreamBuilder, BitmapSortedStreamBuilder, ChunkedStreamBuilder,
+        BitmapChunkedStreamBuilder, BitmapStreamBuilder, ChunkedStreamBuilder,
         SendableRecordBatchStream, SortedStreamBuilder,
     },
 };
@@ -193,7 +193,7 @@ fn bench_streaming_construction(c: &mut Criterion) {
             |b, res| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = BitmapSortedStreamBuilder::from_stream(stream, *res)
+                    let cache = BitmapStreamBuilder::from_stream(stream, *res)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -423,7 +423,7 @@ fn bench_streaming_memory(c: &mut Criterion) {
             .await
             .unwrap();
 
-        let bitmap_cache = BitmapSortedStreamBuilder::from_stream(bitmap_stream, resolution)
+        let bitmap_cache = BitmapStreamBuilder::from_stream(bitmap_stream, resolution)
             .await
             .unwrap();
 
@@ -629,7 +629,7 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     group.bench_function("BitmapLapper_sorted_streaming", |b| {
         b.to_async(&runtime).iter(|| async {
             let stream = create_stream_from_batches(batches);
-            let cache = BitmapSortedStreamBuilder::from_stream(stream, resolution)
+            let cache = BitmapStreamBuilder::from_stream(stream, resolution)
                 .await
                 .unwrap();
             black_box(cache)

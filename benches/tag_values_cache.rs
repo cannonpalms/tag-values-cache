@@ -1,7 +1,7 @@
-//! Benchmark for tag values cache using BitmapLapperCache with sorted stream builder
+//! Benchmark for tag values cache using BitmapLapperCache with stream builder
 //!
-//! This benchmark focuses on the BitmapLapperCache using the sorted streaming API
-//! (BitmapSortedStreamBuilder). It includes cache construction benchmarks and 100%
+//! This benchmark focuses on the BitmapLapperCache using the streaming API
+//! (BitmapStreamBuilder). It includes cache construction benchmarks and 100%
 //! range query benchmarks.
 //!
 //! # Environment Variables
@@ -35,7 +35,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::{
     IntervalCache, format_bytes,
-    streaming::{BitmapSortedStreamBuilder, SendableRecordBatchStream},
+    streaming::{BitmapStreamBuilder, SendableRecordBatchStream},
 };
 
 // Global data loaded once and shared across all benchmarks
@@ -86,7 +86,7 @@ fn create_stream_from_batches(
     stream::iter(batches.iter().map(|b| Ok(b.clone()))).boxed()
 }
 
-/// Benchmark cache build using sorted stream builder
+/// Benchmark cache build using stream builder
 fn bench_cache_build(c: &mut Criterion) {
     let batches = match get_batches() {
         Some(b) => b,
@@ -115,7 +115,7 @@ fn bench_cache_build(c: &mut Criterion) {
         |b, res| {
             b.to_async(&runtime).iter(|| async {
                 let stream = create_stream_from_batches(batches);
-                let cache = BitmapSortedStreamBuilder::from_stream(stream, *res)
+                let cache = BitmapStreamBuilder::from_stream(stream, *res)
                     .await
                     .unwrap();
                 black_box(cache)
@@ -135,16 +135,16 @@ fn bench_range_queries(c: &mut Criterion) {
 
     let resolution = Duration::from_secs(60);
 
-    // Build cache using sorted streaming builder
+    // Build cache using streaming builder
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let bitmap_cache = runtime.block_on(async {
         let bitmap_stream = create_stream_from_batches(batches);
-        BitmapSortedStreamBuilder::from_stream(bitmap_stream, resolution)
+        BitmapStreamBuilder::from_stream(bitmap_stream, resolution)
             .await
             .unwrap()
     });
 
-    println!("\n=== Sorted-Built Cache Info ===");
+    println!("\n=== Stream-Built Cache Info ===");
     println!(
         "BitmapLapperCache intervals: {}",
         bitmap_cache.interval_count()

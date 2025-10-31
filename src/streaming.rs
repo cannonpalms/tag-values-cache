@@ -871,14 +871,27 @@ impl BitmapChunkedStreamBuilder {
     }
 }
 
-/// A builder that constructs a `BitmapLapperCache` from **sorted** data in a single pass.
+/// A builder that constructs a `BitmapLapperCache` from streaming data.
 ///
 /// This builder uses the bitmap approach which groups tagsets by time bucket rather than
 /// tracking individual tagset intervals. This is significantly more memory efficient for
 /// high-cardinality data.
 ///
-/// See `SortedStreamBuilder` documentation for usage details.
-pub struct BitmapSortedStreamBuilder {
+/// Unlike `SortedStreamBuilder` for `ValueAwareLapperCache`, this builder does **not**
+/// require sorted input. Data can arrive in any order since we accumulate tagsets into
+/// per-bucket bitmaps rather than tracking contiguous intervals. The final intervals are
+/// constructed during finalization.
+///
+/// # Usage
+///
+/// ```ignore
+/// use tag_values_cache::streaming::BitmapStreamBuilder;
+///
+/// let mut builder = BitmapStreamBuilder::new(Duration::from_secs(60));
+/// builder.process_stream(stream).await?;
+/// let cache = builder.finalize()?;
+/// ```
+pub struct BitmapStreamBuilder {
     /// Time resolution for bucketing timestamps
     resolution: Duration,
 
@@ -893,34 +906,24 @@ pub struct BitmapSortedStreamBuilder {
     /// convert to intervals at the end. Lapper will handle any merging.
     buckets: std::collections::BTreeMap<u64, roaring::RoaringBitmap>,
 
-    /// Last timestamp processed (for detecting out-of-order data)
-    last_timestamp: Option<u64>,
-
     /// Statistics
     total_points_processed: usize,
-    out_of_order_detected: bool,
 }
 
-impl BitmapSortedStreamBuilder {
-    /// Creates a new bitmap sorted stream builder.
+impl BitmapStreamBuilder {
+    /// Creates a new bitmap stream builder.
     pub fn new(resolution: Duration) -> Self {
         Self {
             resolution,
             string_dict: StringDictionary::new(),
             tagsets: IndexSet::new(),
             buckets: std::collections::BTreeMap::new(),
-            last_timestamp: None,
             total_points_processed: 0,
-            out_of_order_detected: false,
         }
     }
 
     pub fn total_points(&self) -> usize {
         self.total_points_processed
-    }
-
-    pub fn is_out_of_order(&self) -> bool {
-        self.out_of_order_detected
     }
 
     pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
@@ -962,20 +965,12 @@ impl BitmapSortedStreamBuilder {
         timestamp: u64,
         tagset_id: usize,
     ) -> Result<(), CacheBuildError> {
-        // Check for out-of-order data
-        if let Some(last_ts) = self.last_timestamp
-            && timestamp < last_ts
-        {
-            self.out_of_order_detected = true;
-        }
-        self.last_timestamp = Some(timestamp);
         self.total_points_processed += 1;
 
         // Bucket the timestamp
         let bucketed_ts = BitmapLapperCache::bucket_timestamp(timestamp, self.resolution);
 
-        // Add tagset to bucket - no need to close old buckets, we'll convert
-        // all buckets to intervals at finalize time
+        // Add tagset to bucket
         self.buckets
             .entry(bucketed_ts)
             .or_default()
@@ -1025,7 +1020,7 @@ impl BitmapSortedStreamBuilder {
         let stats = SortedStreamStats {
             total_points: self.total_points_processed,
             unique_tagsets: self.tagsets.len(),
-            out_of_order_detected: self.out_of_order_detected,
+            out_of_order_detected: false, // Not tracked for bitmap builder since order doesn't matter
         };
 
         let cache = self.finalize()?;
@@ -2460,7 +2455,7 @@ mod tests {
     #[test]
     fn test_bitmap_sorted_builder_simple() {
         let resolution = Duration::from_nanos(1);
-        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut builder = super::BitmapStreamBuilder::new(resolution);
 
         let points = vec![
             (1, make_tagset(&[("host", "a")])),
@@ -2471,7 +2466,6 @@ mod tests {
 
         builder.process_points(points).unwrap();
         assert_eq!(builder.total_points(), 4);
-        assert!(!builder.is_out_of_order());
 
         let cache = builder.finalize().unwrap();
 
@@ -2484,22 +2478,31 @@ mod tests {
     }
 
     #[test]
-    fn test_bitmap_sorted_builder_detects_out_of_order() {
+    fn test_bitmap_builder_handles_out_of_order() {
         let resolution = Duration::from_nanos(1);
-        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut builder = super::BitmapStreamBuilder::new(resolution);
 
         let points = vec![
             (1, make_tagset(&[("host", "a")])),
             (3, make_tagset(&[("host", "a")])),
-            (2, make_tagset(&[("host", "a")])), // Out of order!
+            (2, make_tagset(&[("host", "a")])), // Out of order - but that's fine!
             (4, make_tagset(&[("host", "a")])),
         ];
 
         builder.process_points(points).unwrap();
-        assert!(builder.is_out_of_order(), "Should detect out-of-order data");
 
-        // Can still finalize
-        let _cache = builder.finalize().unwrap();
+        // Can finalize and produces correct results
+        let cache = builder.finalize().unwrap();
+
+        // Verify all timestamps are present
+        for ts in [1, 2, 3, 4] {
+            let results = cache.query_point(ts);
+            assert!(
+                !results.is_empty(),
+                "Should have results at timestamp {}",
+                ts
+            );
+        }
     }
 
     #[test]
@@ -2519,7 +2522,7 @@ mod tests {
         data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
         // Build with sorted stream builder
-        let mut sorted_builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut sorted_builder = super::BitmapStreamBuilder::new(resolution);
         sorted_builder.process_points(data.clone()).unwrap();
         let sorted_cache = sorted_builder.finalize().unwrap();
 
@@ -2562,7 +2565,7 @@ mod tests {
         data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
         // Build with sorted stream builder
-        let mut sorted_builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut sorted_builder = super::BitmapStreamBuilder::new(resolution);
         sorted_builder.process_points(data.clone()).unwrap();
         let sorted_cache = sorted_builder.finalize().unwrap();
 
@@ -2596,7 +2599,7 @@ mod tests {
     #[test]
     fn test_bitmap_sorted_builder_high_cardinality() {
         let resolution = Duration::from_secs(60);
-        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut builder = super::BitmapStreamBuilder::new(resolution);
 
         // Generate high cardinality data
         let mut data = Vec::new();
@@ -2639,7 +2642,7 @@ mod tests {
         data.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
         // Build with bitmap sorted builder
-        let mut sorted_builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut sorted_builder = super::BitmapStreamBuilder::new(resolution);
         sorted_builder.process_points(data.clone()).unwrap();
         let sorted_cache = sorted_builder.finalize().unwrap();
 
@@ -2697,7 +2700,7 @@ mod tests {
     #[test]
     fn test_bitmap_sorted_with_stats() {
         let resolution = Duration::from_nanos(1);
-        let mut builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let mut builder = super::BitmapStreamBuilder::new(resolution);
 
         let data = vec![
             (1, make_tagset(&[("host", "a"), ("region", "us-east")])),
@@ -2727,7 +2730,7 @@ mod tests {
     #[test]
     fn test_bitmap_sorted_empty() {
         let resolution = Duration::from_nanos(1);
-        let builder = super::BitmapSortedStreamBuilder::new(resolution);
+        let builder = super::BitmapStreamBuilder::new(resolution);
 
         let result = builder.finalize();
         assert!(result.is_err());
