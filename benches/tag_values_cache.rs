@@ -30,6 +30,7 @@
 mod data_loader;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use data_loader::BenchConfig;
 use futures::{StreamExt, stream};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -88,12 +89,22 @@ fn create_stream_from_batches(
 
 /// Benchmark cache build using stream builder
 fn bench_cache_build(c: &mut Criterion) {
-    let batches = match get_batches() {
-        Some(b) => b,
-        None => return,
-    };
+    let bench_config = BenchConfig::from_env();
+    bench_config.print_config();
 
-    let total_rows = count_rows(batches);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let total_rows = if bench_config.stream_from_disk {
+        // For streaming mode, we can't easily count rows upfront
+        // Just use max_rows as an estimate
+        bench_config.max_rows
+    } else {
+        let batches = match get_batches() {
+            Some(b) => b,
+            None => return,
+        };
+        count_rows(batches)
+    };
 
     let mut group = c.benchmark_group("cache_build");
     group.throughput(Throughput::Elements(total_rows as u64));
@@ -104,35 +115,33 @@ fn bench_cache_build(c: &mut Criterion) {
     println!("\n=== Cache Construction ===");
     println!("Total rows: {}", total_rows);
 
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-
     let (name, resolution) = config;
     println!("\nConfig: {} (resolution={:?})", name, resolution);
 
     // Sequential processing
-    group.bench_with_input(
-        BenchmarkId::new("BitmapStream_Sequential", name),
-        &resolution,
-        |b, res| {
-            b.to_async(&runtime).iter(|| async {
-                let stream = create_stream_from_batches(batches);
-                let cache = BitmapStreamBuilder::from_stream(stream, *res)
-                    .await
-                    .unwrap();
-                black_box(cache)
-            });
-        },
-    );
-
-    // Parallel processing with different parallelism levels
-    for parallelism in [2, 4, 8, rayon::current_num_threads()] {
+    if bench_config.stream_from_disk {
         group.bench_with_input(
-            BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
-            &(resolution, parallelism),
-            |b, (res, par)| {
+            BenchmarkId::new("BitmapStream_Sequential", name),
+            &resolution,
+            |b, res| {
+                b.to_async(&runtime).iter(|| async {
+                    let stream = data_loader::create_stream_from_disk().unwrap();
+                    let cache = BitmapStreamBuilder::from_stream(stream, *res)
+                        .await
+                        .unwrap();
+                    black_box(cache)
+                });
+            },
+        );
+    } else {
+        let batches = get_batches().unwrap();
+        group.bench_with_input(
+            BenchmarkId::new("BitmapStream_Sequential", name),
+            &resolution,
+            |b, res| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
+                    let cache = BitmapStreamBuilder::from_stream(stream, *res)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -141,25 +150,64 @@ fn bench_cache_build(c: &mut Criterion) {
         );
     }
 
+    // Parallel processing with different parallelism levels
+    for parallelism in [2, 4, 8, rayon::current_num_threads()] {
+        if bench_config.stream_from_disk {
+            group.bench_with_input(
+                BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
+                &(resolution, parallelism),
+                |b, (res, par)| {
+                    b.to_async(&runtime).iter(|| async {
+                        let stream = data_loader::create_stream_from_disk().unwrap();
+                        let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
+                            .await
+                            .unwrap();
+                        black_box(cache)
+                    });
+                },
+            );
+        } else {
+            let batches = get_batches().unwrap();
+            group.bench_with_input(
+                BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
+                &(resolution, parallelism),
+                |b, (res, par)| {
+                    b.to_async(&runtime).iter(|| async {
+                        let stream = create_stream_from_batches(batches);
+                        let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
+                            .await
+                            .unwrap();
+                        black_box(cache)
+                    });
+                },
+            );
+        }
+    }
+
     group.finish();
 }
 
 /// Benchmark 100% range queries on caches
 fn bench_range_queries(c: &mut Criterion) {
-    let batches = match get_batches() {
-        Some(b) => b,
-        None => return,
-    };
+    let bench_config = BenchConfig::from_env();
 
     let resolution = Duration::from_secs(60);
 
     // Build cache using streaming builder
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let bitmap_cache = runtime.block_on(async {
-        let bitmap_stream = create_stream_from_batches(batches);
-        BitmapStreamBuilder::from_stream(bitmap_stream, resolution)
-            .await
-            .unwrap()
+        if bench_config.stream_from_disk {
+            let stream = data_loader::create_stream_from_disk().unwrap();
+            BitmapStreamBuilder::from_stream(stream, resolution)
+                .await
+                .unwrap()
+        } else {
+            let batches = get_batches().unwrap();
+            let stream = create_stream_from_batches(batches);
+            BitmapStreamBuilder::from_stream(stream, resolution)
+                .await
+                .unwrap()
+        }
     });
 
     println!("\n=== Stream-Built Cache Info ===");
