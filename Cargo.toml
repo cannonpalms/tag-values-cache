@@ -28,7 +28,7 @@ rayon = "1.10"
 roaring = "0.10"
 rust-lapper = "1.2.0"
 thiserror = "2.0.17"
-arrow_util = { path = "../influxdb_iox/arrow_util" }
+arrow_util = { git = "https://github.com/influxdata/influxdb3_core.git", branch = "main", package = "arrow_util" }
 futures = { version = "0.3" }
 tokio = { version = "1.42", features = ["macros", "rt"] }
 ahash = "0.8.12"
