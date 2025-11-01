@@ -19,12 +19,6 @@ To run the benchmark, first generate some sample data:
 ```
 # generate parquet file with 1K cardinality - output will be in benches/data/by-cardinality/
 cargo run --bin generate_cardinality_data_mpmc -- 1K
-
-# sort the generated parquet file by time (unfortunately the previous step does not do this)
-cargo run --bin sort_parquet_datafusion -- benches/data/by-cardinality/1K.parquet
-
-# replace the original file with the sorted file
-mv benches/data/by-cardinality/1K-sorted.parquet benches/data/by-cardinality/1K.parquet
 ```
 
 Then run the benchmark:
@@ -41,3 +35,6 @@ This benchmark supports a few environment variables to customize its behavior:
 - `BENCH_MAX_CARDINALITY`: Maximum cardinality of tag values to consider. Default is unlimited.
 - `BENCH_RECORD_BATCH_ROWS`: Number of rows per record batch when reading the parquet file. Default is the arrow default of 1024.
 - `BENCH_STREAM_FROM_DISK`: If set to `true`, the benchmark will stream data from disk instead of loading it all into memory. Default is `false`.
+
+You can generate higher cardinality datasets by changing the argument to `generate_cardinality_data_mpmc`, e.g.
+`10K`, `100K`, `1M`, etc. Note that higher cardinalities will require more memory and will take longer to generate.
