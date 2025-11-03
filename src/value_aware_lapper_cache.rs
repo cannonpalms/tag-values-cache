@@ -9,12 +9,11 @@ use std::ops::Range;
 use std::time::Duration;
 
 use arrow_util::dictionary::StringDictionary;
-use indexmap::IndexSet;
 use rayon::prelude::*;
 use rust_lapper::Interval;
 
 use crate::{
-    CacheBuildError, IntervalCache, SortedData, TagSet, Timestamp,
+    CacheBuildError, FastIndexSet, IntervalCache, SortedData, TagSet, Timestamp,
     value_aware_lapper::ValueAwareLapper,
 };
 
@@ -45,7 +44,7 @@ pub struct ValueAwareLapperCache {
     string_dict: StringDictionary<usize>,
 
     /// Set of encoded TagSets with preserved insertion order (index = ID)
-    tagsets: IndexSet<EncodedTagSet>,
+    tagsets: FastIndexSet<EncodedTagSet>,
 
     /// Time resolution for bucketing timestamps
     /// Duration::from_nanos(1) = nanosecond resolution (no bucketing)
@@ -81,7 +80,7 @@ impl ValueAwareLapperCache {
     pub(crate) fn from_parts(
         value_lapper: ValueAwareLapper<u64, usize>,
         string_dict: StringDictionary<usize>,
-        tagsets: IndexSet<EncodedTagSet>,
+        tagsets: FastIndexSet<EncodedTagSet>,
         resolution: Duration,
     ) -> Self {
         Self {
@@ -182,7 +181,7 @@ impl ValueAwareLapperCache {
         points: Vec<(Timestamp, TagSet)>,
         resolution: Duration,
         string_dict: &mut StringDictionary<usize>,
-        tagsets: &mut IndexSet<EncodedTagSet>,
+        tagsets: &mut FastIndexSet<EncodedTagSet>,
     ) -> Result<Vec<Interval<u64, usize>>, CacheBuildError> {
         let mut intervals = Vec::new();
 
@@ -266,7 +265,7 @@ impl ValueAwareLapperCache {
 
         // Initialize the string dictionary and tagset storage
         let mut string_dict = StringDictionary::new();
-        let mut tagsets = IndexSet::new();
+        let mut tagsets = FastIndexSet::default();
 
         // Build intervals with encoding
         let intervals = Self::build_intervals(points, resolution, &mut string_dict, &mut tagsets)?;
@@ -289,10 +288,10 @@ impl ValueAwareLapperCache {
     ) -> (
         Vec<(Timestamp, usize)>,
         StringDictionary<usize>,
-        IndexSet<EncodedTagSet>,
+        FastIndexSet<EncodedTagSet>,
     ) {
         let mut string_dict = StringDictionary::new();
-        let mut tagsets = IndexSet::new();
+        let mut tagsets = FastIndexSet::default();
 
         let encoded_points: Vec<(Timestamp, usize)> = chunk
             .iter()
@@ -320,14 +319,14 @@ impl ValueAwareLapperCache {
     /// Merge multiple local dictionaries into a global dictionary.
     /// Returns (global_dict, global_tagsets, id_remapping_per_chunk)
     fn merge_dictionaries(
-        local_dicts: Vec<(StringDictionary<usize>, IndexSet<EncodedTagSet>)>,
+        local_dicts: Vec<(StringDictionary<usize>, FastIndexSet<EncodedTagSet>)>,
     ) -> (
         StringDictionary<usize>,
-        IndexSet<EncodedTagSet>,
+        FastIndexSet<EncodedTagSet>,
         Vec<Vec<usize>>, // Remapping table: chunk_idx -> [local_id -> global_id]
     ) {
         let mut global_dict = StringDictionary::new();
-        let mut global_tagsets = IndexSet::new();
+        let mut global_tagsets = FastIndexSet::default();
         let mut id_remappings = Vec::new();
 
         for (local_dict, local_tagsets) in local_dicts {
@@ -380,7 +379,7 @@ impl ValueAwareLapperCache {
             return Ok(Self {
                 value_lapper: ValueAwareLapper::new(vec![]),
                 string_dict: StringDictionary::new(),
-                tagsets: IndexSet::new(),
+                tagsets: FastIndexSet::default(),
                 resolution,
             });
         }

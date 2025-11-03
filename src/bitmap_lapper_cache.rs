@@ -15,13 +15,13 @@ use std::ops::Range;
 use std::time::Duration;
 
 use arrow_util::dictionary::StringDictionary;
-use indexmap::IndexSet;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
 use rust_lapper::{Interval, Lapper};
 
 use crate::{
-    CacheBuildError, EncodedTagSet, IntervalCache, SortedData, TagSet, Timestamp, encode_tagset,
+    CacheBuildError, EncodedTagSet, FastIndexSet, IntervalCache, SortedData, TagSet, Timestamp,
+    encode_tagset,
 };
 
 /// Wrapper around RoaringBitmap that implements Eq.
@@ -93,7 +93,7 @@ pub struct BitmapLapperCache {
     string_dict: StringDictionary<usize>,
 
     /// Vector of encoded TagSets (index = tagset ID)
-    tagsets: IndexSet<EncodedTagSet>,
+    tagsets: FastIndexSet<EncodedTagSet>,
 
     /// Time resolution for bucketing timestamps
     resolution: Duration,
@@ -137,7 +137,7 @@ impl BitmapLapperCache {
     pub(crate) fn from_parts(
         lapper: Lapper<u64, EqRoaringBitmap>,
         string_dict: StringDictionary<usize>,
-        tagsets: IndexSet<EncodedTagSet>,
+        tagsets: FastIndexSet<EncodedTagSet>,
         resolution: Duration,
     ) -> Self {
         Self {
@@ -184,7 +184,7 @@ impl BitmapLapperCache {
         points: Vec<(Timestamp, TagSet)>,
         resolution: Duration,
         string_dict: &mut StringDictionary<usize>,
-        tagsets: &mut IndexSet<EncodedTagSet>,
+        tagsets: &mut FastIndexSet<EncodedTagSet>,
     ) -> Result<Vec<Interval<u64, EqRoaringBitmap>>, CacheBuildError> {
         if points.is_empty() {
             return Ok(Vec::new());
@@ -232,7 +232,7 @@ impl BitmapLapperCache {
         let points = sorted_data.into_inner();
 
         let mut string_dict = StringDictionary::new();
-        let mut tagsets = IndexSet::new();
+        let mut tagsets = FastIndexSet::default();
 
         let intervals = Self::build_intervals(points, resolution, &mut string_dict, &mut tagsets)?;
 
@@ -258,7 +258,7 @@ impl BitmapLapperCache {
             return Ok(Self {
                 lapper: Lapper::new(vec![]),
                 string_dict: StringDictionary::new(),
-                tagsets: IndexSet::new(),
+                tagsets: FastIndexSet::default(),
                 resolution,
             });
         }
@@ -271,7 +271,7 @@ impl BitmapLapperCache {
             .par_chunks(chunk_size)
             .map(|chunk| {
                 let mut string_dict = StringDictionary::new();
-                let mut tagsets = IndexSet::new();
+                let mut tagsets = FastIndexSet::default();
 
                 let encoded_points: Vec<(Timestamp, usize)> = chunk
                     .iter()
@@ -288,7 +288,7 @@ impl BitmapLapperCache {
 
         // Merge dictionaries
         let mut global_dict = StringDictionary::new();
-        let mut global_tagsets = IndexSet::new();
+        let mut global_tagsets = FastIndexSet::default();
         let mut id_remappings = Vec::new();
 
         for (_, local_dict, local_tagsets) in &local_results {
@@ -397,7 +397,7 @@ impl BitmapLapperCache {
             .par_chunks(chunk_size)
             .map(|chunk| {
                 let mut string_dict = StringDictionary::new();
-                let mut tagsets = IndexSet::new();
+                let mut tagsets = FastIndexSet::default();
 
                 let encoded_points: Vec<(Timestamp, usize)> = chunk
                     .iter()

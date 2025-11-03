@@ -70,6 +70,12 @@ pub type TagSet = BTreeSet<(String, String)>;
 /// Using Box<[T]> instead of Vec<T> avoids excess capacity overhead.
 pub(crate) type EncodedTagSet = Box<[(usize, usize)]>;
 
+/// A fast IndexSet using ahash for hashing.
+///
+/// Uses ahash::RandomState instead of the default hasher for better performance
+/// on non-cryptographic hashing workloads.
+pub(crate) type FastIndexSet<T> = indexmap::IndexSet<T, ahash::RandomState>;
+
 /// Encodes a TagSet into a dictionary-encoded representation.
 ///
 /// This function takes all strings (keys and values) from the TagSet and looks them up
@@ -1024,7 +1030,7 @@ pub fn extract_tags_from_batch(batch: &RecordBatch) -> Vec<(Timestamp, TagSet)> 
 pub fn extract_and_encode_tags_from_batch(
     batch: &RecordBatch,
     string_dict: &mut arrow_util::dictionary::StringDictionary<usize>,
-    tagsets: &mut indexmap::IndexSet<EncodedTagSet>,
+    tagsets: &mut FastIndexSet<EncodedTagSet>,
 ) -> Vec<(Timestamp, usize)> {
     let schema = batch.schema_ref();
 

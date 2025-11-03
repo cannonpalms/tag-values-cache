@@ -34,13 +34,12 @@
 
 use arrow::array::RecordBatch;
 use arrow_util::dictionary::StringDictionary;
-use indexmap::IndexSet;
 use rayon::prelude::*;
 use std::time::Duration;
 
 use crate::bitmap_lapper_cache::BitmapLapperCache;
 use crate::value_aware_lapper_cache::ValueAwareLapperCache;
-use crate::{CacheBuildError, EncodedTagSet, TagSet, extract_tags_from_batch};
+use crate::{CacheBuildError, EncodedTagSet, FastIndexSet, TagSet, extract_tags_from_batch};
 
 use arrow::error::ArrowError;
 use futures::StreamExt;
@@ -409,7 +408,7 @@ pub struct SortedStreamBuilder {
     string_dict: StringDictionary<usize>,
 
     /// Set of encoded TagSets with preserved insertion order (index = ID)
-    tagsets: indexmap::IndexSet<crate::EncodedTagSet>,
+    tagsets: FastIndexSet<EncodedTagSet>,
 
     /// Currently open intervals: tagset_id -> (start, stop)
     /// Where start is the bucket timestamp and stop is exclusive (next bucket)
@@ -450,7 +449,7 @@ impl SortedStreamBuilder {
         Self {
             resolution,
             string_dict: StringDictionary::new(),
-            tagsets: indexmap::IndexSet::new(),
+            tagsets: FastIndexSet::default(),
             open_intervals: std::collections::HashMap::new(),
             completed_intervals: Vec::new(),
             last_timestamp: None,
@@ -912,7 +911,7 @@ struct ThreadLocalBitmapBuilder {
     string_dict: StringDictionary<usize>,
 
     /// Vector of encoded TagSets (index = ID)
-    tagsets: IndexSet<EncodedTagSet>,
+    tagsets: FastIndexSet<EncodedTagSet>,
 
     /// Buckets: bucketed_timestamp -> RoaringBitmap of tagset IDs
     buckets: std::collections::BTreeMap<u64, roaring::RoaringBitmap>,
@@ -925,7 +924,7 @@ impl ThreadLocalBitmapBuilder {
     fn new() -> Self {
         Self {
             string_dict: StringDictionary::new(),
-            tagsets: IndexSet::new(),
+            tagsets: FastIndexSet::default(),
             buckets: std::collections::BTreeMap::new(),
             total_points: 0,
         }
@@ -1038,7 +1037,7 @@ pub struct BitmapStreamBuilder {
     string_dict: StringDictionary<usize>,
 
     /// Vector of encoded TagSets (index = ID)
-    tagsets: IndexSet<EncodedTagSet>,
+    tagsets: FastIndexSet<EncodedTagSet>,
 
     /// Buckets: bucketed_timestamp -> RoaringBitmap of tagset IDs
     /// We don't need to track open/closed - just accumulate all buckets and
@@ -1059,7 +1058,7 @@ impl BitmapStreamBuilder {
         Self {
             resolution,
             string_dict: StringDictionary::new(),
-            tagsets: IndexSet::new(),
+            tagsets: FastIndexSet::default(),
             buckets: std::collections::BTreeMap::new(),
             total_points_processed: 0,
             io_time: Duration::ZERO,
@@ -3098,9 +3097,10 @@ mod tests {
 
         // Build with parallel processing
         let stream_par = futures::stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]).boxed();
-        let (cache_par, _) = super::BitmapStreamBuilder::from_stream_parallel(stream_par, resolution, 2)
-            .await
-            .unwrap();
+        let (cache_par, _) =
+            super::BitmapStreamBuilder::from_stream_parallel(stream_par, resolution, 2)
+                .await
+                .unwrap();
 
         // Verify interval counts
         assert_eq!(cache_seq.interval_count(), cache_par.interval_count());
