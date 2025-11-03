@@ -41,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
 
             println!("Built cache with {} intervals", cache.interval_count());
-            println!("Stats: {} points, {} chunks", stats.total_points, stats.chunks_flushed);
+            println!(
+                "Stats: {} points, {} chunks",
+                stats.total_points, stats.chunks_flushed
+            );
         } else {
             println!("Failed to create stream from parquet file");
         }
@@ -56,12 +59,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let second_file = "benches/data/parquet/0f8350c2-cb7d-0c15-2990-5488675b169c.parquet";
     if std::path::Path::new(second_file).exists() {
         if let Ok(stream) = create_parquet_stream(second_file) {
-            let (cache, stats) = SortedStreamBuilder::from_stream(
-                stream,
-                Duration::from_secs(60)
-            ).await?;
+            let (cache, stats) =
+                SortedStreamBuilder::from_stream(stream, Duration::from_secs(60)).await?;
 
-            println!("Built sorted cache with {} intervals", cache.interval_count());
+            println!(
+                "Built sorted cache with {} intervals",
+                cache.interval_count()
+            );
             println!(
                 "Stats: {} points across {} unique tagsets",
                 stats.total_points, stats.unique_tagsets

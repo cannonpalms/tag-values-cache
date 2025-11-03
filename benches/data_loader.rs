@@ -253,6 +253,12 @@ impl BenchConfig {
     }
 }
 
+impl Default for BenchConfig {
+    fn default() -> Self {
+        Self::from_env()
+    }
+}
+
 /// File metadata extracted from parquet without loading full data
 #[derive(Debug, Clone)]
 struct FileMetadata {
@@ -700,8 +706,9 @@ pub fn load_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>> {
 
 /// Load Parquet data as RecordBatches for streaming benchmarks
 #[allow(dead_code)]
-pub fn load_record_batches(config: &BenchConfig) -> Result<Vec<arrow::array::RecordBatch>, std::io::Error> {
-
+pub fn load_record_batches(
+    config: &BenchConfig,
+) -> Result<Vec<arrow::array::RecordBatch>, std::io::Error> {
     if config.input_type != InputType::Parquet {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -895,8 +902,9 @@ pub fn load_record_batches(config: &BenchConfig) -> Result<Vec<arrow::array::Rec
 /// This function returns a stream that lazily reads parquet files from disk,
 /// avoiding the need to pre-load all data into memory. This is useful for
 /// benchmarking with very large datasets that don't fit in memory.
-pub fn create_stream_from_disk(config: &BenchConfig) -> Result<SendableRecordBatchStream, std::io::Error> {
-
+pub fn create_stream_from_disk(
+    config: &BenchConfig,
+) -> Result<SendableRecordBatchStream, std::io::Error> {
     if config.input_type != InputType::Parquet {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

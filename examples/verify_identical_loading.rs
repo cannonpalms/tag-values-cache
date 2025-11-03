@@ -22,7 +22,7 @@ fn main() {
 
     // Load data using batch method (load_parquet_data)
     println!("\n--- Loading data for BATCH method (load_parquet_data) ---");
-    let batch_data = match load_data() {
+    let batch_data = match load_data(&config) {
         Ok(data) => data,
         Err(e) => {
             eprintln!("Error loading batch data: {}", e);
@@ -51,7 +51,7 @@ fn main() {
 
     // Load data using streaming method (load_record_batches)
     println!("\n--- Loading data for STREAMING method (load_record_batches) ---");
-    let record_batches = match load_record_batches() {
+    let record_batches = match load_record_batches(&config) {
         Ok(batches) => batches,
         Err(e) => {
             eprintln!("Error loading record batches: {}", e);
