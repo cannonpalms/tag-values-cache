@@ -29,7 +29,9 @@
 
 mod data_loader;
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{
+    BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+};
 use data_loader::BenchConfig;
 use futures::{StreamExt, stream};
 use std::sync::OnceLock;
@@ -87,6 +89,14 @@ fn create_stream_from_batches(
     stream::iter(batches.iter().map(|b| Ok(b.clone()))).boxed()
 }
 
+fn stream_record_batches(config: &BenchConfig) -> SendableRecordBatchStream {
+    if config.stream_from_disk {
+        data_loader::create_stream_from_disk().unwrap()
+    } else {
+        let batches = get_batches().unwrap();
+        create_stream_from_batches(batches)
+    }
+}
 /// Benchmark cache build using stream builder
 fn bench_cache_build(c: &mut Criterion) {
     let bench_config = BenchConfig::from_env();
@@ -119,69 +129,39 @@ fn bench_cache_build(c: &mut Criterion) {
     println!("\nConfig: {} (resolution={:?})", name, resolution);
 
     // Sequential processing
-    if bench_config.stream_from_disk {
-        group.bench_with_input(
-            BenchmarkId::new("BitmapStream_Sequential", name),
-            &resolution,
-            |b, res| {
-                b.to_async(&runtime).iter(|| async {
-                    let stream = data_loader::create_stream_from_disk().unwrap();
-                    let cache = BitmapStreamBuilder::from_stream(stream, *res)
-                        .await
-                        .unwrap();
-                    black_box(cache)
-                });
-            },
-        );
-    } else {
-        let batches = get_batches().unwrap();
-        group.bench_with_input(
-            BenchmarkId::new("BitmapStream_Sequential", name),
-            &resolution,
-            |b, res| {
-                b.to_async(&runtime).iter(|| async {
-                    let stream = create_stream_from_batches(batches);
-                    let cache = BitmapStreamBuilder::from_stream(stream, *res)
-                        .await
-                        .unwrap();
-                    black_box(cache)
-                });
-            },
-        );
-    }
+    group.bench_with_input(
+        BenchmarkId::new("BitmapStream_Sequential", name),
+        &resolution,
+        |b, res| {
+            b.to_async(&runtime).iter(|| async {
+                let stream = stream_record_batches(&bench_config);
+                let cache = BitmapStreamBuilder::from_stream(stream, *res)
+                    .await
+                    .unwrap();
+                black_box(cache)
+            });
+        },
+    );
 
     // Parallel processing with different parallelism levels
     for parallelism in [2, 4, 8, rayon::current_num_threads()] {
-        if bench_config.stream_from_disk {
-            group.bench_with_input(
-                BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
-                &(resolution, parallelism),
-                |b, (res, par)| {
-                    b.to_async(&runtime).iter(|| async {
-                        let stream = data_loader::create_stream_from_disk().unwrap();
+        group.bench_with_input(
+            BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
+            &(resolution, parallelism),
+            |b, (res, par)| {
+                b.to_async(&runtime).iter_batched(
+                    || stream_record_batches(&bench_config),
+                    |stream| async {
+                        // let stream = stream_record_batches(&bench_config);
                         let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
                             .await
                             .unwrap();
                         black_box(cache)
-                    });
-                },
-            );
-        } else {
-            let batches = get_batches().unwrap();
-            group.bench_with_input(
-                BenchmarkId::new(format!("BitmapStream_Parallel_{}", parallelism), name),
-                &(resolution, parallelism),
-                |b, (res, par)| {
-                    b.to_async(&runtime).iter(|| async {
-                        let stream = create_stream_from_batches(batches);
-                        let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
-                            .await
-                            .unwrap();
-                        black_box(cache)
-                    });
-                },
-            );
-        }
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
 
     group.finish();
@@ -191,23 +171,15 @@ fn bench_cache_build(c: &mut Criterion) {
 fn bench_range_queries(c: &mut Criterion) {
     let bench_config = BenchConfig::from_env();
 
-    let resolution = Duration::from_secs(60);
+    let resolution = Duration::from_secs(3600); // 1 hour
 
     // Build cache using streaming builder
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let bitmap_cache = runtime.block_on(async {
-        if bench_config.stream_from_disk {
-            let stream = data_loader::create_stream_from_disk().unwrap();
-            BitmapStreamBuilder::from_stream(stream, resolution)
-                .await
-                .unwrap()
-        } else {
-            let batches = get_batches().unwrap();
-            let stream = create_stream_from_batches(batches);
-            BitmapStreamBuilder::from_stream(stream, resolution)
-                .await
-                .unwrap()
-        }
+        let stream = stream_record_batches(&bench_config);
+        BitmapStreamBuilder::from_stream(stream, resolution)
+            .await
+            .unwrap()
     });
 
     println!("\n=== Stream-Built Cache Info ===");
@@ -221,14 +193,8 @@ fn bench_range_queries(c: &mut Criterion) {
     );
 
     // Get time range from cache
-    let min_ts = match bitmap_cache.min_timestamp() {
-        Some(ts) => ts,
-        None => return,
-    };
-    let max_ts = match bitmap_cache.max_timestamp() {
-        Some(ts) => ts,
-        None => return,
-    };
+    let min_ts = bitmap_cache.min_timestamp().unwrap();
+    let max_ts = bitmap_cache.max_timestamp().unwrap();
 
     // Test 100% range query only
     let range = min_ts..max_ts;
