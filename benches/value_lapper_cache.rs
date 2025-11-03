@@ -5,8 +5,14 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tag_values_cache::{IntervalCache, TagSet, ValueAwareLapperCache};
 
-// Global data loaded once and shared across all benchmarks
+// Global configuration and data loaded once and shared across all benchmarks
+static CONFIG: OnceLock<data_loader::BenchConfig> = OnceLock::new();
 static PARQUET_DATA: OnceLock<Vec<(u64, TagSet)>> = OnceLock::new();
+
+/// Get or initialize the benchmark configuration
+fn get_config() -> &'static data_loader::BenchConfig {
+    CONFIG.get_or_init(data_loader::BenchConfig::from_env)
+}
 
 // Global caches for each resolution, initialized lazily
 static CACHE_NANOSECOND: OnceLock<ValueAwareLapperCache> = OnceLock::new();
@@ -53,11 +59,14 @@ fn get_cache_for_resolution(
 
 /// Load the data once and return a reference to it
 fn get_parquet_data() -> Option<&'static Vec<(u64, TagSet)>> {
-    PARQUET_DATA.get_or_init(|| match data_loader::load_data() {
-        Ok(data) => data,
-        Err(e) => {
-            eprintln!("Error loading data: {}", e);
-            Vec::new()
+    PARQUET_DATA.get_or_init(|| {
+        let config = get_config();
+        match data_loader::load_data(config) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Error loading data: {}", e);
+                Vec::new()
+            }
         }
     });
 

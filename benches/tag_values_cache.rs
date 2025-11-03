@@ -41,26 +41,30 @@ use tag_values_cache::{
     streaming::{BitmapStreamBuilder, SendableRecordBatchStream},
 };
 
-// Global data loaded once and shared across all benchmarks
+// Global configuration and data loaded once and shared across all benchmarks
+static CONFIG: OnceLock<BenchConfig> = OnceLock::new();
 static BATCHES: OnceLock<Vec<arrow::array::RecordBatch>> = OnceLock::new();
+
+/// Get or initialize the benchmark configuration
+fn get_config() -> &'static BenchConfig {
+    CONFIG.get_or_init(|| {
+        let mut config = BenchConfig::from_env();
+
+        // Override default input path if not explicitly set
+        if std::env::var("BENCH_INPUT_PATH").is_err() {
+            config.input_path = "benches/data/by-cardinality/1K.parquet".into();
+            config.input_type = data_loader::InputType::Parquet;
+        }
+
+        config
+    })
+}
 
 /// Load RecordBatches once and return a reference to them
 fn get_batches() -> Option<&'static Vec<arrow::array::RecordBatch>> {
     BATCHES.get_or_init(|| {
-        // Set default input path if not specified
-        // SAFETY: This is safe because we're only setting env vars once at initialization
-        // before any benchmarks run, and benchmarks are single-threaded by default.
-        unsafe {
-            if std::env::var("BENCH_INPUT_PATH").is_err() {
-                std::env::set_var("BENCH_INPUT_PATH", "benches/data/by-cardinality/1K.parquet");
-            }
-            // Remove row limit - load entire file
-            if std::env::var("BENCH_MAX_ROWS").is_err() {
-                std::env::set_var("BENCH_MAX_ROWS", usize::MAX.to_string());
-            }
-        }
-
-        match data_loader::load_record_batches() {
+        let config = get_config();
+        match data_loader::load_record_batches(config) {
             Ok(batches) => batches,
             Err(e) => {
                 eprintln!("Error loading record batches: {}", e);
@@ -91,39 +95,50 @@ fn create_stream_from_batches(
 
 fn stream_record_batches(config: &BenchConfig) -> SendableRecordBatchStream {
     if config.stream_from_disk {
-        data_loader::create_stream_from_disk().unwrap()
+        data_loader::create_stream_from_disk(config).unwrap()
     } else {
         let batches = get_batches().unwrap();
         create_stream_from_batches(batches)
     }
 }
+
 /// Benchmark cache build using stream builder
 fn bench_cache_build(c: &mut Criterion) {
-    let bench_config = BenchConfig::from_env();
+    let bench_config = get_config();
     bench_config.print_config();
 
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
     let total_rows = if bench_config.stream_from_disk {
         // For streaming mode, we can't easily count rows upfront
-        // Just use max_rows as an estimate
-        bench_config.max_rows
+        // Use max_rows if finite, otherwise None
+        if bench_config.max_rows == usize::MAX {
+            None
+        } else {
+            Some(bench_config.max_rows)
+        }
     } else {
         let batches = match get_batches() {
             Some(b) => b,
             None => return,
         };
-        count_rows(batches)
+        Some(count_rows(batches))
     };
 
     let mut group = c.benchmark_group("cache_build");
-    group.throughput(Throughput::Elements(total_rows as u64));
+    if let Some(rows) = total_rows {
+        group.throughput(Throughput::Elements(rows as u64));
+    }
 
     // Test different resolutions
     let config = ("1hour", Duration::from_secs(3600));
 
     println!("\n=== Cache Construction ===");
-    println!("Total rows: {}", total_rows);
+    if let Some(rows) = total_rows {
+        println!("Total rows: {}", rows);
+    } else {
+        println!("Total rows: unlimited (streaming from disk)");
+    }
 
     let (name, resolution) = config;
     println!("\nConfig: {} (resolution={:?})", name, resolution);
@@ -135,9 +150,11 @@ fn bench_cache_build(c: &mut Criterion) {
         |b, res| {
             b.to_async(&runtime).iter(|| async {
                 let stream = stream_record_batches(&bench_config);
-                let cache = BitmapStreamBuilder::from_stream(stream, *res)
+                let (cache, stats) = BitmapStreamBuilder::from_stream(stream, *res)
                     .await
                     .unwrap();
+
+                println!("Built cache - stats: {:#?}", stats);
                 black_box(cache)
             });
         },
@@ -153,9 +170,11 @@ fn bench_cache_build(c: &mut Criterion) {
                     || stream_record_batches(&bench_config),
                     |stream| async {
                         // let stream = stream_record_batches(&bench_config);
-                        let cache = BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
-                            .await
-                            .unwrap();
+                        let (cache, stats) =
+                            BitmapStreamBuilder::from_stream_parallel(stream, *res, *par)
+                                .await
+                                .unwrap();
+                        println!("Built cache - stats: {:#?}", stats);
                         black_box(cache)
                     },
                     BatchSize::SmallInput,
@@ -169,7 +188,7 @@ fn bench_cache_build(c: &mut Criterion) {
 
 /// Benchmark 100% range queries on caches
 fn bench_range_queries(c: &mut Criterion) {
-    let bench_config = BenchConfig::from_env();
+    let bench_config = get_config();
 
     let resolution = Duration::from_secs(3600); // 1 hour
 
@@ -177,9 +196,10 @@ fn bench_range_queries(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let bitmap_cache = runtime.block_on(async {
         let stream = stream_record_batches(&bench_config);
-        BitmapStreamBuilder::from_stream(stream, resolution)
+        let (cache, _) = BitmapStreamBuilder::from_stream(stream, resolution)
             .await
-            .unwrap()
+            .unwrap();
+        cache
     });
 
     println!("\n=== Stream-Built Cache Info ===");

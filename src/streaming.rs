@@ -303,7 +303,7 @@ impl ChunkedStreamBuilder {
     ///
     /// # Example
     /// ```ignore
-    /// let cache = ChunkedStreamBuilder::from_stream(
+    /// let (cache, stats) = ChunkedStreamBuilder::from_stream(
     ///     stream,
     ///     Duration::from_secs(3600),
     ///     1_000_000,
@@ -317,10 +317,10 @@ impl ChunkedStreamBuilder {
         stream: SendableRecordBatchStream,
         resolution: Duration,
         chunk_size: usize,
-    ) -> Result<ValueAwareLapperCache, CacheBuildError> {
+    ) -> Result<(ValueAwareLapperCache, StreamingStats), CacheBuildError> {
         let mut builder = Self::new(resolution, chunk_size);
         builder.process_stream(stream).await?;
-        builder.finalize()
+        builder.finalize_with_stats()
     }
 }
 
@@ -424,6 +424,10 @@ pub struct SortedStreamBuilder {
     /// Statistics for monitoring
     total_points_processed: usize,
     out_of_order_detected: bool,
+
+    /// Timing statistics
+    io_time: Duration,
+    processing_time: Duration,
 }
 
 impl SortedStreamBuilder {
@@ -452,6 +456,8 @@ impl SortedStreamBuilder {
             last_timestamp: None,
             total_points_processed: 0,
             out_of_order_detected: false,
+            io_time: Duration::ZERO,
+            processing_time: Duration::ZERO,
         }
     }
 
@@ -480,12 +486,16 @@ impl SortedStreamBuilder {
     /// to ensure timestamps are in ascending order. Use `is_out_of_order()` to detect
     /// violations after processing.
     pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
+        let processing_start = std::time::Instant::now();
         let encoded_points = crate::extract_and_encode_tags_from_batch(
             batch,
             &mut self.string_dict,
             &mut self.tagsets,
         );
-        self.process_encoded_points(encoded_points)
+        let result = self.process_encoded_points(encoded_points);
+        self.processing_time += processing_start.elapsed();
+
+        result
     }
 
     /// Processes a vector of (timestamp, TagSet) points directly.
@@ -509,9 +519,11 @@ impl SortedStreamBuilder {
 
     /// Internal implementation of process_points
     fn process_points(&mut self, points: Vec<(u64, TagSet)>) -> Result<(), CacheBuildError> {
+        let processing_start = std::time::Instant::now();
         for (timestamp, tagset) in points {
             self.process_point(timestamp, tagset)?;
         }
+        self.processing_time += processing_start.elapsed();
         Ok(())
     }
 
@@ -643,10 +655,10 @@ impl SortedStreamBuilder {
             total_points: self.total_points_processed,
             unique_tagsets: self.tagsets.len(),
             out_of_order_detected: self.out_of_order_detected,
+            io_time: self.io_time,
+            processing_time: self.processing_time,
         };
-
         let cache = self.finalize()?;
-
         Ok((cache, stats))
     }
 
@@ -675,9 +687,18 @@ impl SortedStreamBuilder {
         &mut self,
         mut stream: SendableRecordBatchStream,
     ) -> Result<(), CacheBuildError> {
-        while let Some(batch_result) = stream.next().await {
-            let batch = batch_result.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
-            self.process_batch(&batch)?;
+        loop {
+            let io_start = std::time::Instant::now();
+            let batch_result = stream.next().await;
+            self.io_time += io_start.elapsed();
+
+            match batch_result {
+                Some(batch) => {
+                    let batch = batch.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
+                    self.process_batch(&batch)?;
+                }
+                None => break,
+            }
         }
         Ok(())
     }
@@ -690,7 +711,7 @@ impl SortedStreamBuilder {
     ///
     /// # Example
     /// ```ignore
-    /// let cache = SortedStreamBuilder::from_stream(
+    /// let (cache, stats) = SortedStreamBuilder::from_stream(
     ///     sorted_stream,
     ///     Duration::from_secs(3600),
     /// ).await?;
@@ -702,10 +723,10 @@ impl SortedStreamBuilder {
     pub async fn from_stream(
         stream: SendableRecordBatchStream,
         resolution: Duration,
-    ) -> Result<ValueAwareLapperCache, CacheBuildError> {
+    ) -> Result<(ValueAwareLapperCache, SortedStreamStats), CacheBuildError> {
         let mut builder = Self::new(resolution);
         builder.process_stream(stream).await?;
-        builder.finalize()
+        builder.finalize_with_stats()
     }
 }
 
@@ -720,14 +741,24 @@ pub struct SortedStreamStats {
 
     /// Whether out-of-order data was detected
     pub out_of_order_detected: bool,
+
+    /// Total time spent doing I/O (extracting data from RecordBatches)
+    pub io_time: Duration,
+
+    /// Total time spent processing data (excluding I/O)
+    pub processing_time: Duration,
 }
 
 impl std::fmt::Display for SortedStreamStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "SortedStreamStats {{ total_points: {}, unique_tagsets: {}, out_of_order: {} }}",
-            self.total_points, self.unique_tagsets, self.out_of_order_detected
+            "SortedStreamStats {{ total_points: {}, unique_tagsets: {}, out_of_order: {}, io_time: {:?}, processing_time: {:?} }}",
+            self.total_points,
+            self.unique_tagsets,
+            self.out_of_order_detected,
+            self.io_time,
+            self.processing_time
         )
     }
 }
@@ -865,10 +896,10 @@ impl BitmapChunkedStreamBuilder {
         stream: SendableRecordBatchStream,
         resolution: Duration,
         chunk_size: usize,
-    ) -> Result<BitmapLapperCache, CacheBuildError> {
+    ) -> Result<(BitmapLapperCache, StreamingStats), CacheBuildError> {
         let mut builder = Self::new(resolution, chunk_size);
         builder.process_stream(stream).await?;
-        builder.finalize()
+        builder.finalize_with_stats()
     }
 }
 
@@ -1016,6 +1047,10 @@ pub struct BitmapStreamBuilder {
 
     /// Statistics
     total_points_processed: usize,
+
+    /// Timing statistics
+    io_time: Duration,
+    processing_time: Duration,
 }
 
 impl BitmapStreamBuilder {
@@ -1027,6 +1062,8 @@ impl BitmapStreamBuilder {
             tagsets: IndexSet::new(),
             buckets: std::collections::BTreeMap::new(),
             total_points_processed: 0,
+            io_time: Duration::ZERO,
+            processing_time: Duration::ZERO,
         }
     }
 
@@ -1035,19 +1072,25 @@ impl BitmapStreamBuilder {
     }
 
     pub fn process_batch(&mut self, batch: &RecordBatch) -> Result<(), CacheBuildError> {
+        let processing_start = std::time::Instant::now();
         let encoded_points = crate::extract_and_encode_tags_from_batch(
             batch,
             &mut self.string_dict,
             &mut self.tagsets,
         );
-        self.process_encoded_points(encoded_points)
+        let result = self.process_encoded_points(encoded_points);
+        self.processing_time += processing_start.elapsed();
+
+        result
     }
 
     #[cfg(test)]
     fn process_points(&mut self, points: Vec<(u64, TagSet)>) -> Result<(), CacheBuildError> {
+        let processing_start = std::time::Instant::now();
         for (timestamp, tagset) in points {
             self.process_point(timestamp, tagset)?;
         }
+        self.processing_time += processing_start.elapsed();
         Ok(())
     }
 
@@ -1129,10 +1172,10 @@ impl BitmapStreamBuilder {
             total_points: self.total_points_processed,
             unique_tagsets: self.tagsets.len(),
             out_of_order_detected: false, // Not tracked for bitmap builder since order doesn't matter
+            io_time: self.io_time,
+            processing_time: self.processing_time,
         };
-
         let cache = self.finalize()?;
-
         Ok((cache, stats))
     }
 
@@ -1140,9 +1183,18 @@ impl BitmapStreamBuilder {
         &mut self,
         mut stream: SendableRecordBatchStream,
     ) -> Result<(), CacheBuildError> {
-        while let Some(batch_result) = stream.next().await {
-            let batch = batch_result.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
-            self.process_batch(&batch)?;
+        loop {
+            let io_start = std::time::Instant::now();
+            let batch_result = stream.next().await;
+            self.io_time += io_start.elapsed();
+
+            match batch_result {
+                Some(batch) => {
+                    let batch = batch.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
+                    self.process_batch(&batch)?;
+                }
+                None => break,
+            }
         }
         Ok(())
     }
@@ -1150,10 +1202,10 @@ impl BitmapStreamBuilder {
     pub async fn from_stream(
         stream: SendableRecordBatchStream,
         resolution: Duration,
-    ) -> Result<BitmapLapperCache, CacheBuildError> {
+    ) -> Result<(BitmapLapperCache, SortedStreamStats), CacheBuildError> {
         let mut builder = Self::new(resolution);
         builder.process_stream(stream).await?;
-        builder.finalize()
+        builder.finalize_with_stats()
     }
 
     /// Merge thread-local builders into this global builder.
@@ -1216,6 +1268,7 @@ impl BitmapStreamBuilder {
         &mut self,
         batches: Vec<RecordBatch>,
     ) -> Result<(), CacheBuildError> {
+        let processing_start = std::time::Instant::now();
         let resolution = self.resolution;
 
         // Run rayon parallel work in spawn_blocking to avoid blocking tokio runtime
@@ -1235,6 +1288,8 @@ impl BitmapStreamBuilder {
 
         // Merge thread-local results into self (fast, non-blocking)
         self.merge_local_builders(local_builders)?;
+
+        self.processing_time += processing_start.elapsed();
 
         Ok(())
     }
@@ -1264,16 +1319,25 @@ impl BitmapStreamBuilder {
         let mut stream = stream;
         let mut batch_buffer = Vec::with_capacity(parallelism);
 
-        while let Some(batch_result) = stream.next().await {
-            let batch = batch_result.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
-            batch_buffer.push(batch);
+        loop {
+            let io_start = std::time::Instant::now();
+            let batch_result = stream.next().await;
+            self.io_time += io_start.elapsed();
 
-            // When buffer is full, process in parallel
-            if batch_buffer.len() >= parallelism {
-                let batches_to_process = std::mem::take(&mut batch_buffer);
-                self.process_batch_buffer_parallel(batches_to_process)
-                    .await?;
-                batch_buffer = Vec::with_capacity(parallelism);
+            match batch_result {
+                Some(batch) => {
+                    let batch = batch.map_err(|e| CacheBuildError::ArrowError(e.to_string()))?;
+                    batch_buffer.push(batch);
+
+                    // When buffer is full, process in parallel
+                    if batch_buffer.len() >= parallelism {
+                        let batches_to_process = std::mem::take(&mut batch_buffer);
+                        self.process_batch_buffer_parallel(batches_to_process)
+                            .await?;
+                        batch_buffer = Vec::with_capacity(parallelism);
+                    }
+                }
+                None => break,
             }
         }
 
@@ -1296,7 +1360,7 @@ impl BitmapStreamBuilder {
     /// # Example
     ///
     /// ```ignore
-    /// let cache = BitmapStreamBuilder::from_stream_parallel(
+    /// let (cache, stats) = BitmapStreamBuilder::from_stream_parallel(
     ///     stream,
     ///     Duration::from_secs(60),
     ///     4, // Process 4 batches at a time
@@ -1306,10 +1370,10 @@ impl BitmapStreamBuilder {
         stream: SendableRecordBatchStream,
         resolution: Duration,
         parallelism: usize,
-    ) -> Result<BitmapLapperCache, CacheBuildError> {
+    ) -> Result<(BitmapLapperCache, SortedStreamStats), CacheBuildError> {
         let mut builder = Self::new(resolution);
         builder.process_stream_parallel(stream, parallelism).await?;
-        builder.finalize()
+        builder.finalize_with_stats()
     }
 }
 
@@ -3028,13 +3092,13 @@ mod tests {
         // Build with sequential processing
         let batch = create_record_batch(&data);
         let stream_seq = futures::stream::iter(vec![Ok(batch.clone())]).boxed();
-        let cache_seq = super::BitmapStreamBuilder::from_stream(stream_seq, resolution)
+        let (cache_seq, _) = super::BitmapStreamBuilder::from_stream(stream_seq, resolution)
             .await
             .unwrap();
 
         // Build with parallel processing
         let stream_par = futures::stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]).boxed();
-        let cache_par = super::BitmapStreamBuilder::from_stream_parallel(stream_par, resolution, 2)
+        let (cache_par, _) = super::BitmapStreamBuilder::from_stream_parallel(stream_par, resolution, 2)
             .await
             .unwrap();
 
@@ -3074,7 +3138,7 @@ mod tests {
         let stream =
             futures::stream::iter(vec![Ok(batch.clone()), Ok(batch.clone()), Ok(batch)]).boxed();
 
-        let cache = super::BitmapStreamBuilder::from_stream_parallel(stream, resolution, 3)
+        let (cache, _) = super::BitmapStreamBuilder::from_stream_parallel(stream, resolution, 3)
             .await
             .unwrap();
 
@@ -3107,7 +3171,7 @@ mod tests {
 
         // Test with 1 batch (sequential fallback)
         let stream1 = futures::stream::iter(vec![Ok(batch.clone())]).boxed();
-        let cache1 = super::BitmapStreamBuilder::from_stream_parallel(stream1, resolution, 4)
+        let (cache1, _) = super::BitmapStreamBuilder::from_stream_parallel(stream1, resolution, 4)
             .await
             .unwrap();
 
@@ -3119,7 +3183,7 @@ mod tests {
             Ok(batch.clone()),
         ])
         .boxed();
-        let cache4 = super::BitmapStreamBuilder::from_stream_parallel(stream4, resolution, 4)
+        let (cache4, _) = super::BitmapStreamBuilder::from_stream_parallel(stream4, resolution, 4)
             .await
             .unwrap();
 

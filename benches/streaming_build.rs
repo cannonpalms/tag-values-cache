@@ -40,16 +40,25 @@ use tag_values_cache::streaming::{
     ChunkedStreamBuilder, SendableRecordBatchStream, SortedStreamBuilder,
 };
 
-// Global data loaded once and shared across all benchmarks
+// Global configuration and data loaded once and shared across all benchmarks
+static CONFIG: OnceLock<data_loader::BenchConfig> = OnceLock::new();
 static RECORD_BATCHES: OnceLock<Vec<RecordBatch>> = OnceLock::new();
+
+/// Get or initialize the benchmark configuration
+fn get_config() -> &'static data_loader::BenchConfig {
+    CONFIG.get_or_init(data_loader::BenchConfig::from_env)
+}
 
 /// Load RecordBatches once and return a reference to them
 fn get_record_batches() -> Option<&'static Vec<RecordBatch>> {
-    RECORD_BATCHES.get_or_init(|| match data_loader::load_record_batches() {
-        Ok(batches) => batches,
-        Err(e) => {
-            eprintln!("Error loading RecordBatches: {}", e);
-            Vec::new()
+    RECORD_BATCHES.get_or_init(|| {
+        let config = get_config();
+        match data_loader::load_record_batches(config) {
+            Ok(batches) => batches,
+            Err(e) => {
+                eprintln!("Error loading RecordBatches: {}", e);
+                Vec::new()
+            }
         }
     });
 
@@ -151,7 +160,7 @@ fn create_iox_session_config() -> SessionConfig {
 /// Create a SendableRecordBatchStream that reads directly from parquet files on disk using DataFusion
 /// This uses DataFusion's query engine with IOx-style configuration for optimal parquet handling
 async fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io::Error> {
-    let config = data_loader::BenchConfig::from_env();
+    let config = get_config();
     let path = &config.input_path;
     let max_rows = config.max_rows;
 

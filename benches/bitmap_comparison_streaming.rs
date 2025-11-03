@@ -30,6 +30,7 @@
 mod data_loader;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use data_loader::BenchConfig;
 use futures::{StreamExt, stream};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -41,26 +42,35 @@ use tag_values_cache::{
     },
 };
 
-// Global data loaded once and shared across all benchmarks
+// Global configuration and data loaded once and shared across all benchmarks
+static CONFIG: OnceLock<BenchConfig> = OnceLock::new();
 static BATCHES: OnceLock<Vec<arrow::array::RecordBatch>> = OnceLock::new();
+
+/// Get or initialize the benchmark configuration
+fn get_config() -> &'static BenchConfig {
+    CONFIG.get_or_init(|| {
+        let mut config = BenchConfig::from_env();
+
+        // Override default input path if not explicitly set
+        if std::env::var("BENCH_INPUT_PATH").is_err() {
+            config.input_path = "benches/data/by-cardinality/1K.parquet".into();
+            config.input_type = data_loader::InputType::Parquet;
+        }
+
+        // Remove row limit - load entire file
+        if std::env::var("BENCH_MAX_ROWS").is_err() {
+            config.max_rows = usize::MAX;
+        }
+
+        config
+    })
+}
 
 /// Load RecordBatches once and return a reference to them
 fn get_batches() -> Option<&'static Vec<arrow::array::RecordBatch>> {
     BATCHES.get_or_init(|| {
-        // Set default input path if not specified
-        // SAFETY: This is safe because we're only setting env vars once at initialization
-        // before any benchmarks run, and benchmarks are single-threaded by default.
-        unsafe {
-            if std::env::var("BENCH_INPUT_PATH").is_err() {
-                std::env::set_var("BENCH_INPUT_PATH", "benches/data/by-cardinality/1K.parquet");
-            }
-            // Remove row limit - load entire file
-            if std::env::var("BENCH_MAX_ROWS").is_err() {
-                std::env::set_var("BENCH_MAX_ROWS", "999999999");
-            }
-        }
-
-        match data_loader::load_record_batches() {
+        let config = get_config();
+        match data_loader::load_record_batches(config) {
             Ok(batches) => batches,
             Err(e) => {
                 eprintln!("Error loading record batches: {}", e);
@@ -141,7 +151,7 @@ fn bench_streaming_construction(c: &mut Criterion) {
             |b, (res, cs)| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = ChunkedStreamBuilder::from_stream(stream, *res, *cs)
+                    let (cache, _) = ChunkedStreamBuilder::from_stream(stream, *res, *cs)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -155,7 +165,7 @@ fn bench_streaming_construction(c: &mut Criterion) {
             |b, (res, cs)| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = BitmapChunkedStreamBuilder::from_stream(stream, *res, *cs)
+                    let (cache, _) = BitmapChunkedStreamBuilder::from_stream(stream, *res, *cs)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -179,7 +189,7 @@ fn bench_streaming_construction(c: &mut Criterion) {
             |b, res| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = SortedStreamBuilder::from_stream(stream, *res)
+                    let (cache, _) = SortedStreamBuilder::from_stream(stream, *res)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -193,7 +203,7 @@ fn bench_streaming_construction(c: &mut Criterion) {
             |b, res| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = BitmapStreamBuilder::from_stream(stream, *res)
+                    let (cache, _) = BitmapStreamBuilder::from_stream(stream, *res)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -221,12 +231,12 @@ fn bench_streaming_queries(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let value_aware_cache =
+        let (value_aware_cache, _) =
             ChunkedStreamBuilder::from_stream(value_aware_stream, resolution, chunk_size)
                 .await
                 .unwrap();
 
-        let bitmap_cache =
+        let (bitmap_cache, _) =
             BitmapChunkedStreamBuilder::from_stream(bitmap_stream, resolution, chunk_size)
                 .await
                 .unwrap();
@@ -318,12 +328,12 @@ fn bench_streaming_range_queries(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let value_aware_cache =
+        let (value_aware_cache, _) =
             ChunkedStreamBuilder::from_stream(value_aware_stream, resolution, chunk_size)
                 .await
                 .unwrap();
 
-        let bitmap_cache =
+        let (bitmap_cache, _) =
             BitmapChunkedStreamBuilder::from_stream(bitmap_stream, resolution, chunk_size)
                 .await
                 .unwrap();
@@ -401,12 +411,12 @@ fn bench_streaming_memory(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let value_aware_cache =
+        let (value_aware_cache, _) =
             ChunkedStreamBuilder::from_stream(value_aware_stream, resolution, chunk_size)
                 .await
                 .unwrap();
 
-        let bitmap_cache =
+        let (bitmap_cache, _) =
             BitmapChunkedStreamBuilder::from_stream(bitmap_stream, resolution, chunk_size)
                 .await
                 .unwrap();
@@ -419,11 +429,11 @@ fn bench_streaming_memory(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let value_aware_cache = SortedStreamBuilder::from_stream(value_aware_stream, resolution)
+        let (value_aware_cache, _) = SortedStreamBuilder::from_stream(value_aware_stream, resolution)
             .await
             .unwrap();
 
-        let bitmap_cache = BitmapStreamBuilder::from_stream(bitmap_stream, resolution)
+        let (bitmap_cache, _) = BitmapStreamBuilder::from_stream(bitmap_stream, resolution)
             .await
             .unwrap();
 
@@ -516,7 +526,7 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
             |b, &cs| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = ChunkedStreamBuilder::from_stream(stream, resolution, cs)
+                    let (cache, _) = ChunkedStreamBuilder::from_stream(stream, resolution, cs)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -530,7 +540,7 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
             |b, &cs| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let cache = BitmapChunkedStreamBuilder::from_stream(stream, resolution, cs)
+                    let (cache, _) = BitmapChunkedStreamBuilder::from_stream(stream, resolution, cs)
                         .await
                         .unwrap();
                     black_box(cache)
@@ -572,7 +582,7 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     group.bench_function("ValueAwareLapper_streaming", |b| {
         b.to_async(&runtime).iter(|| async {
             let stream = create_stream_from_batches(batches);
-            let cache = ChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+            let (cache, _) = ChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
                 .await
                 .unwrap();
             black_box(cache)
@@ -595,7 +605,7 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     group.bench_function("BitmapLapper_streaming", |b| {
         b.to_async(&runtime).iter(|| async {
             let stream = create_stream_from_batches(batches);
-            let cache = BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+            let (cache, _) = BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
                 .await
                 .unwrap();
             black_box(cache)
@@ -618,7 +628,7 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     group.bench_function("ValueAwareLapper_sorted_streaming", |b| {
         b.to_async(&runtime).iter(|| async {
             let stream = create_stream_from_batches(batches);
-            let cache = SortedStreamBuilder::from_stream(stream, resolution)
+            let (cache, _) = SortedStreamBuilder::from_stream(stream, resolution)
                 .await
                 .unwrap();
             black_box(cache)
@@ -629,7 +639,7 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     group.bench_function("BitmapLapper_sorted_streaming", |b| {
         b.to_async(&runtime).iter(|| async {
             let stream = create_stream_from_batches(batches);
-            let cache = BitmapStreamBuilder::from_stream(stream, resolution)
+            let (cache, _) = BitmapStreamBuilder::from_stream(stream, resolution)
                 .await
                 .unwrap();
             black_box(cache)

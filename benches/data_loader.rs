@@ -111,7 +111,7 @@ impl BenchConfig {
         let max_rows = std::env::var("BENCH_MAX_ROWS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(100_000); // Reduced from 10M to 100K for faster benchmarks
+            .unwrap_or(usize::MAX); // Default: unlimited
 
         // Parse duration with human-readable format support
         // Try BENCH_MAX_DURATION first (new human-readable format)
@@ -124,7 +124,7 @@ impl BenchConfig {
                     .ok()
                     .and_then(|s| s.parse().ok())
             })
-            .unwrap_or(60 * 60 * 1_000_000_000); // Default: 1 hour
+            .unwrap_or(u64::MAX); // Default: unlimited
 
         let max_cardinality = std::env::var("BENCH_MAX_CARDINALITY")
             .ok()
@@ -226,12 +226,23 @@ impl BenchConfig {
         println!("\n=== Benchmark Configuration ===");
         println!("Input path: {:?}", self.input_path);
         println!("Input type: {:?}", self.input_type);
-        println!("Max rows: {}", self.max_rows);
-        println!(
-            "Max duration: {} ({})",
-            Self::format_duration(self.max_duration_ns),
-            self.max_duration_ns
-        );
+
+        if self.max_rows == usize::MAX {
+            println!("Max rows: unlimited");
+        } else {
+            println!("Max rows: {}", self.max_rows);
+        }
+
+        if self.max_duration_ns == u64::MAX {
+            println!("Max duration: unlimited");
+        } else {
+            println!(
+                "Max duration: {} ({})",
+                Self::format_duration(self.max_duration_ns),
+                self.max_duration_ns
+            );
+        }
+
         if let Some(card) = self.max_cardinality {
             println!("Max cardinality: {}", card);
         } else {
@@ -641,8 +652,7 @@ fn load_line_protocol_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, Ta
 }
 
 /// Main entry point: Load data according to configuration
-pub fn load_data() -> std::io::Result<Vec<(u64, TagSet)>> {
-    let config = BenchConfig::from_env();
+pub fn load_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>> {
     config.print_config();
 
     // Check if path exists
@@ -690,8 +700,7 @@ pub fn load_data() -> std::io::Result<Vec<(u64, TagSet)>> {
 
 /// Load Parquet data as RecordBatches for streaming benchmarks
 #[allow(dead_code)]
-pub fn load_record_batches() -> Result<Vec<arrow::array::RecordBatch>, std::io::Error> {
-    let config = BenchConfig::from_env();
+pub fn load_record_batches(config: &BenchConfig) -> Result<Vec<arrow::array::RecordBatch>, std::io::Error> {
 
     if config.input_type != InputType::Parquet {
         return Err(std::io::Error::new(
@@ -886,8 +895,7 @@ pub fn load_record_batches() -> Result<Vec<arrow::array::RecordBatch>, std::io::
 /// This function returns a stream that lazily reads parquet files from disk,
 /// avoiding the need to pre-load all data into memory. This is useful for
 /// benchmarking with very large datasets that don't fit in memory.
-pub fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io::Error> {
-    let config = BenchConfig::from_env();
+pub fn create_stream_from_disk(config: &BenchConfig) -> Result<SendableRecordBatchStream, std::io::Error> {
 
     if config.input_type != InputType::Parquet {
         return Err(std::io::Error::new(
@@ -979,9 +987,13 @@ pub fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io::E
         consecutive_files.len()
     );
 
-    // Phase 3: Create a stream that reads files on-demand
+    // Phase 3: Create a stream that reads files on-demand and limits rows
     let max_rows = config.max_rows;
     let record_batch_rows = config.record_batch_rows;
+
+    // Use a state variable to track total rows across the stream
+    let total_rows_cell = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total_rows_ref = total_rows_cell.clone();
 
     let stream = stream::iter(consecutive_files)
         .then(move |metadata| async move {
@@ -1005,7 +1017,25 @@ pub fn create_stream_from_disk() -> Result<SendableRecordBatchStream, std::io::E
             Ok::<_, arrow::error::ArrowError>(stream::iter(reader))
         })
         .try_flatten()
-        .take(max_rows)
+        .try_filter_map(move |batch| {
+            let batch_rows = batch.num_rows();
+            let current_total = total_rows_ref.load(std::sync::atomic::Ordering::SeqCst);
+            let remaining_capacity = max_rows.saturating_sub(current_total);
+
+            if remaining_capacity == 0 {
+                // Already at limit - filter out this batch
+                futures::future::ready(Ok(None))
+            } else if batch_rows <= remaining_capacity {
+                // Entire batch fits
+                total_rows_ref.fetch_add(batch_rows, std::sync::atomic::Ordering::SeqCst);
+                futures::future::ready(Ok(Some(batch)))
+            } else {
+                // Need to truncate this batch to fit exactly max_rows
+                let truncated_batch = batch.slice(0, remaining_capacity);
+                total_rows_ref.fetch_add(remaining_capacity, std::sync::atomic::Ordering::SeqCst);
+                futures::future::ready(Ok(Some(truncated_batch)))
+            }
+        })
         .boxed();
 
     Ok(stream)

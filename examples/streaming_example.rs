@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let parquet_file = "benches/data/parquet/00d3b7ae-af87-05ba-1461-8b337e39f6ad.parquet";
     if std::path::Path::new(parquet_file).exists() {
         if let Ok(stream) = create_parquet_stream(parquet_file) {
-            let cache = ChunkedStreamBuilder::from_stream(
+            let (cache, stats) = ChunkedStreamBuilder::from_stream(
                 stream,
                 Duration::from_secs(3600), // 1 hour resolution
                 1_000_000,                 // 1M points per chunk
@@ -41,6 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
 
             println!("Built cache with {} intervals", cache.interval_count());
+            println!("Stats: {} points, {} chunks", stats.total_points, stats.chunks_flushed);
         } else {
             println!("Failed to create stream from parquet file");
         }
@@ -48,23 +49,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Parquet file not found, skipping example 1");
     }
 
-    // Example 2: Using SortedStreamBuilder with a second Parquet file
-    println!("\nExample 2: SortedStreamBuilder with sorted stream");
+    // Example 2: Using SortedStreamBuilder with sorted stream and timing stats
+    println!("\nExample 2: SortedStreamBuilder with from_stream (includes stats)");
 
     // Try to use a second file if available, otherwise skip
     let second_file = "benches/data/parquet/0f8350c2-cb7d-0c15-2990-5488675b169c.parquet";
     if std::path::Path::new(second_file).exists() {
         if let Ok(stream) = create_parquet_stream(second_file) {
-            let cache = SortedStreamBuilder::from_stream(
+            let (cache, stats) = SortedStreamBuilder::from_stream(
                 stream,
-                Duration::from_secs(60), // 1 minute resolution
-            )
-            .await?;
+                Duration::from_secs(60)
+            ).await?;
 
+            println!("Built sorted cache with {} intervals", cache.interval_count());
             println!(
-                "Built sorted cache with {} intervals",
-                cache.interval_count()
+                "Stats: {} points across {} unique tagsets",
+                stats.total_points, stats.unique_tagsets
             );
+            println!("  I/O time: {:?}", stats.io_time);
+            println!("  Processing time: {:?}", stats.processing_time);
+            println!("  Out of order detected: {}", stats.out_of_order_detected);
         }
     } else {
         println!("Second parquet file not found, skipping example 2");
