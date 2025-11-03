@@ -673,8 +673,8 @@ pub fn load_data(config: &BenchConfig) -> std::io::Result<Vec<(u64, TagSet)>> {
     }
 
     let data = match config.input_type {
-        InputType::Parquet => load_parquet_data(&config)?,
-        InputType::LineProtocol => load_line_protocol_data(&config)?,
+        InputType::Parquet => load_parquet_data(config)?,
+        InputType::LineProtocol => load_line_protocol_data(config)?,
     };
 
     // Print statistics

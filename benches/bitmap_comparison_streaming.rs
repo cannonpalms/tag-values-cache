@@ -429,9 +429,10 @@ fn bench_streaming_memory(c: &mut Criterion) {
         let value_aware_stream = create_stream_from_batches(batches);
         let bitmap_stream = create_stream_from_batches(batches);
 
-        let (value_aware_cache, _) = SortedStreamBuilder::from_stream(value_aware_stream, resolution)
-            .await
-            .unwrap();
+        let (value_aware_cache, _) =
+            SortedStreamBuilder::from_stream(value_aware_stream, resolution)
+                .await
+                .unwrap();
 
         let (bitmap_cache, _) = BitmapStreamBuilder::from_stream(bitmap_stream, resolution)
             .await
@@ -540,9 +541,10 @@ fn bench_chunk_size_impact(c: &mut Criterion) {
             |b, &cs| {
                 b.to_async(&runtime).iter(|| async {
                     let stream = create_stream_from_batches(batches);
-                    let (cache, _) = BitmapChunkedStreamBuilder::from_stream(stream, resolution, cs)
-                        .await
-                        .unwrap();
+                    let (cache, _) =
+                        BitmapChunkedStreamBuilder::from_stream(stream, resolution, cs)
+                            .await
+                            .unwrap();
                     black_box(cache)
                 });
             },
@@ -605,9 +607,10 @@ fn bench_streaming_vs_batch(c: &mut Criterion) {
     group.bench_function("BitmapLapper_streaming", |b| {
         b.to_async(&runtime).iter(|| async {
             let stream = create_stream_from_batches(batches);
-            let (cache, _) = BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
-                .await
-                .unwrap();
+            let (cache, _) =
+                BitmapChunkedStreamBuilder::from_stream(stream, resolution, chunk_size)
+                    .await
+                    .unwrap();
             black_box(cache)
         });
     });

@@ -149,7 +149,7 @@ fn bench_cache_build(c: &mut Criterion) {
         &resolution,
         |b, res| {
             b.to_async(&runtime).iter(|| async {
-                let stream = stream_record_batches(&bench_config);
+                let stream = stream_record_batches(bench_config);
                 let (cache, stats) = BitmapStreamBuilder::from_stream(stream, *res)
                     .await
                     .unwrap();
@@ -167,7 +167,7 @@ fn bench_cache_build(c: &mut Criterion) {
             &(resolution, parallelism),
             |b, (res, par)| {
                 b.to_async(&runtime).iter_batched(
-                    || stream_record_batches(&bench_config),
+                    || stream_record_batches(bench_config),
                     |stream| async {
                         // let stream = stream_record_batches(&bench_config);
                         let (cache, stats) =
@@ -195,7 +195,7 @@ fn bench_range_queries(c: &mut Criterion) {
     // Build cache using streaming builder
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let bitmap_cache = runtime.block_on(async {
-        let stream = stream_record_batches(&bench_config);
+        let stream = stream_record_batches(bench_config);
         let (cache, _) = BitmapStreamBuilder::from_stream(stream, resolution)
             .await
             .unwrap();
