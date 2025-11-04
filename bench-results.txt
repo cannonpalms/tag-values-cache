@@ -1,0 +1,58 @@
+
+=== Pre-bucketed Cache Construction ===
+Cardinality: 1000 unique tagsets
+Time range: 24 hours
+Resolution: 1 hour (24 buckets)
+Total rows: 24000 (1000 rows/bucket)
+Expected intervals in cache: 24
+manual_prebucketed_cache_build/BitmapLapperCache_from_prebucketed/1K
+                        time:   [7.9040 ms 7.9497 ms 8.0089 ms]
+                        thrpt:  [2.9967 Melem/s 3.0190 Melem/s 3.0364 Melem/s]
+                 change:
+                        time:   [-9.2277% -7.0645% -4.8038%] (p = 0.03 < 0.05)
+                        thrpt:  [+5.0462% +7.6015% +10.166%]
+                        Performance has improved.
+
+=== Pre-bucketed Cache Construction ===
+Cardinality: 10000 unique tagsets
+Time range: 24 hours
+Resolution: 1 hour (24 buckets)
+Total rows: 240000 (10000 rows/bucket)
+Expected intervals in cache: 24
+manual_prebucketed_cache_build/BitmapLapperCache_from_prebucketed/10K
+                        time:   [96.827 ms 97.074 ms 97.492 ms]
+                        thrpt:  [2.4617 Melem/s 2.4723 Melem/s 2.4787 Melem/s]
+                 change:
+                        time:   [-13.087% -11.963% -10.678%] (p = 0.01 < 0.05)
+                        thrpt:  [+11.954% +13.589% +15.058%]
+                        Performance has improved.
+
+=== Pre-bucketed Cache Construction ===
+Cardinality: 100000 unique tagsets
+Time range: 24 hours
+Resolution: 1 hour (24 buckets)
+Total rows: 2400000 (100000 rows/bucket)
+Expected intervals in cache: 24
+manual_prebucketed_cache_build/BitmapLapperCache_from_prebucketed/100K
+                        time:   [998.09 ms 1.0059 s 1.0138 s]
+                        thrpt:  [2.3673 Melem/s 2.3858 Melem/s 2.4046 Melem/s]
+                 change:
+                        time:   [-13.338% -11.345% -9.1627%] (p = 0.02 < 0.05)
+                        thrpt:  [+10.087% +12.797% +15.391%]
+                        Performance has improved.
+
+=== Pre-bucketed Cache Construction ===
+Cardinality: 1000000 unique tagsets
+Time range: 24 hours
+Resolution: 1 hour (24 buckets)
+Total rows: 24000000 (1000000 rows/bucket)
+Expected intervals in cache: 24
+manual_prebucketed_cache_build/BitmapLapperCache_from_prebucketed/1M
+                        time:   [11.874 s 12.223 s 12.542 s]
+                        thrpt:  [1.9136 Melem/s 1.9635 Melem/s 2.0213 Melem/s]
+                 change:
+                        time:   [+10.314% +13.572% +16.772%] (p = 0.01 < 0.05)
+                        thrpt:  [-14.363% -11.950% -9.3499%]
+                        Performance has regressed.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) low mild

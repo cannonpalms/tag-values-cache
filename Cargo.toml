@@ -60,3 +60,7 @@ harness = false
 [[bench]]
 name = "tag_values_cache"
 harness = false
+
+[[bench]]
+name = "manual_prebucketed"
+harness = false

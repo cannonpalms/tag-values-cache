@@ -10,10 +10,10 @@
 //! - **Simpler architecture**: Uses rust_lapper::Lapper directly, no custom wrapper needed
 //! - **Linear scaling**: Scales with time range, not cardinality
 
-use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
 
+use ahash::AHashMap;
 use arrow_util::dictionary::StringDictionary;
 use rayon::prelude::*;
 use roaring::RoaringBitmap;
@@ -190,8 +190,8 @@ impl BitmapLapperCache {
             return Ok(Vec::new());
         }
 
-        // Use BTreeMap to group tagsets by bucket (keeps them sorted)
-        let mut bucket_map: BTreeMap<u64, RoaringBitmap> = BTreeMap::new();
+        // Use AHashMap to group tagsets by bucket (faster than BTreeMap)
+        let mut bucket_map: AHashMap<u64, RoaringBitmap> = AHashMap::new();
 
         for (ts, tagset) in points {
             let bucket = Self::bucket_timestamp(ts, resolution);
@@ -245,6 +245,93 @@ impl BitmapLapperCache {
             tagsets,
             resolution,
         })
+    }
+
+    /// Create a cache from pre-bucketed and deduped data.
+    ///
+    /// This function assumes the input data is already:
+    /// 1. Pre-bucketed: timestamps are aligned to bucket boundaries
+    /// 2. Deduped: no duplicate tagsets within the same bucket
+    /// 3. Sorted: by timestamp
+    ///
+    /// It skips the bucketing process but still builds the dictionary and other
+    /// internal data structures.
+    pub fn from_prebucketed(
+        prebucketed_data: Vec<(Timestamp, TagSet)>,
+        resolution: Duration,
+    ) -> Result<Self, CacheBuildError> {
+        if prebucketed_data.is_empty() {
+            return Ok(Self {
+                lapper: Lapper::new(vec![]),
+                string_dict: StringDictionary::new(),
+                tagsets: FastIndexSet::default(),
+                resolution,
+            });
+        }
+
+        let mut string_dict = StringDictionary::new();
+        let mut tagsets = FastIndexSet::default();
+
+        // Build intervals directly from pre-bucketed data
+        let intervals = Self::build_intervals_from_prebucketed(
+            prebucketed_data,
+            &mut string_dict,
+            &mut tagsets,
+        )?;
+
+        let lapper = Lapper::new(intervals);
+
+        Ok(Self {
+            lapper,
+            string_dict,
+            tagsets,
+            resolution,
+        })
+    }
+
+    /// Build intervals from pre-bucketed and deduped data.
+    ///
+    /// Unlike build_intervals, this assumes timestamps are already bucket-aligned
+    /// and doesn't perform bucketing or deduplication.
+    fn build_intervals_from_prebucketed(
+        points: Vec<(Timestamp, TagSet)>,
+        string_dict: &mut StringDictionary<usize>,
+        tagsets: &mut FastIndexSet<EncodedTagSet>,
+    ) -> Result<Vec<Interval<u64, EqRoaringBitmap>>, CacheBuildError> {
+        if points.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Use AHashMap to group tagsets by their pre-bucketed timestamp
+        let mut bucket_map: AHashMap<u64, RoaringBitmap> = AHashMap::new();
+
+        for (bucket_ts, tagset) in points {
+            // Encode the TagSet
+            let encoded = encode_tagset(&tagset, string_dict);
+            let (tagset_id, _) = tagsets.insert_full(encoded);
+
+            // Add tagset ID to the bucket's bitmap
+            // Note: bucket_ts is already bucket-aligned, no need to call bucket_timestamp
+            bucket_map
+                .entry(bucket_ts)
+                .or_default()
+                .insert(tagset_id as u32);
+        }
+
+        // Convert to intervals - ONE per bucket!
+        let intervals: Vec<Interval<u64, EqRoaringBitmap>> = bucket_map
+            .into_iter()
+            .map(|(start, bitmap)| {
+                let stop = start.checked_add(1).expect("timestamp overflow");
+                Interval {
+                    start,
+                    stop,
+                    val: bitmap.into(),
+                }
+            })
+            .collect();
+
+        Ok(intervals)
     }
 
     /// Create a cache from unsorted data with a specific time resolution.
@@ -354,7 +441,7 @@ impl BitmapLapperCache {
         }
 
         // Group by bucket
-        let mut bucket_map: BTreeMap<u64, RoaringBitmap> = BTreeMap::new();
+        let mut bucket_map: AHashMap<u64, RoaringBitmap> = AHashMap::new();
 
         for (ts, tagset_id) in points {
             let bucket = Self::bucket_timestamp(ts, resolution);

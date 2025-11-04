@@ -36,6 +36,7 @@ pub mod lapper_cache;
 pub mod nclist_cache;
 pub mod segment_tree_cache;
 pub mod streaming;
+pub mod tag_generator;
 pub mod unmerged_btree_cache;
 pub mod value_aware_lapper;
 pub mod value_aware_lapper_cache;
